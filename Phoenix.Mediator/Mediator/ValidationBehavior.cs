@@ -1,8 +1,8 @@
 using FluentValidation;
-using Phoenix.CustomMediator.Abstractions;
-using Phoenix.CustomMediator.Wrappers;
+using Phoenix.Mediator.Abstractions;
+using Phoenix.Mediator.Wrappers;
 
-namespace Phoenix.CustomMediator.Mediator;
+namespace Phoenix.Mediator.Mediator;
 
 public sealed class ValidationBehavior<TRequest, TResponse>(IEnumerable<IValidator<TRequest>> validators) : IPipelineBehavior<TRequest, TResponse> where TRequest : IRequest<TResponse>
 {

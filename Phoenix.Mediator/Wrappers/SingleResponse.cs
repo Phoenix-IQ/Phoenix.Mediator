@@ -1,4 +1,4 @@
-﻿namespace Phoenix.CustomMediator.Wrappers;
+namespace Phoenix.Mediator.Wrappers;
 
 public class SingleResponse<T>
 {

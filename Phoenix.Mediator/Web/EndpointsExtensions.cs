@@ -1,14 +1,14 @@
-﻿using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
-using Phoenix.CustomMediator.Abstractions;
-using Phoenix.CustomMediator.Wrappers;
+using Phoenix.Mediator.Abstractions;
+using Phoenix.Mediator.Wrappers;
 using System.Reflection;
 using System.Text.Json;
 
-namespace Phoenix.CustomMediator.Web;
+namespace Phoenix.Mediator.Web;
 
 public static class EndpointsExtensions
 {

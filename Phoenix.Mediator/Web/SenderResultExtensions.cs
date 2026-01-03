@@ -1,7 +1,7 @@
 using Microsoft.AspNetCore.Http;
-using Phoenix.CustomMediator.Abstractions;
+using Phoenix.Mediator.Abstractions;
 
-namespace Phoenix.CustomMediator.Web;
+namespace Phoenix.Mediator.Web;
 
 public static class SenderResultExtensions
 {

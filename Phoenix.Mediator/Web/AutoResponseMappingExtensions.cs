@@ -1,7 +1,7 @@
 using Microsoft.AspNetCore.Http;
-using Phoenix.CustomMediator.Wrappers;
+using Phoenix.Mediator.Wrappers;
 
-namespace Phoenix.CustomMediator.Web;
+namespace Phoenix.Mediator.Web;
 
 public static class AutoResponseMappingExtensions
 {

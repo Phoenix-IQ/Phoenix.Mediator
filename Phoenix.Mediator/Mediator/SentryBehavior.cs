@@ -1,6 +1,6 @@
-﻿using Phoenix.CustomMediator.Abstractions;
+using Phoenix.Mediator.Abstractions;
 
-namespace Phoenix.CustomMediator.Mediator;
+namespace Phoenix.Mediator.Mediator;
 
 public sealed class SentryBehavior<TRequest, TResponse>(IHub? hub = null) : IPipelineBehavior<TRequest, TResponse>
     where TRequest : IRequest<TResponse>

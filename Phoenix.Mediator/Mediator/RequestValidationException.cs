@@ -1,6 +1,6 @@
-using Phoenix.CustomMediator.Wrappers;
+using Phoenix.Mediator.Wrappers;
 
-namespace Phoenix.CustomMediator.Mediator;
+namespace Phoenix.Mediator.Mediator;
 
 public sealed class RequestValidationException(ErrorsResponse errors) : Exception("Request validation failed.")
 {

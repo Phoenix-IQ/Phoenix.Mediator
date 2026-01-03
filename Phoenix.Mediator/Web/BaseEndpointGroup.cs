@@ -1,6 +1,6 @@
-﻿using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Builder;
 
-namespace Phoenix.CustomMediator.Web;
+namespace Phoenix.Mediator.Web;
 /// <summary>
 /// Base class for grouping endpoints using minimal APIs.
 /// Supports DI through constructor injection in derived groups.

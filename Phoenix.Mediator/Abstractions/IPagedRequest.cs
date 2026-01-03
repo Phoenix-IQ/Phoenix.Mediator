@@ -1,6 +1,6 @@
-﻿using Phoenix.CustomMediator.Wrappers;
+using Phoenix.Mediator.Wrappers;
 
-namespace Phoenix.CustomMediator.Abstractions;
+namespace Phoenix.Mediator.Abstractions;
 
 public interface IPagedRequest<TItem> : IRequest<MultiResponse<TItem>>
 {

@@ -1,10 +1,10 @@
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
-using Phoenix.CustomMediator.Abstractions;
-using Phoenix.CustomMediator.Wrappers;
+using Phoenix.Mediator.Abstractions;
+using Phoenix.Mediator.Wrappers;
 using Serilog;
 
-namespace Phoenix.CustomMediator.Mediator;
+namespace Phoenix.Mediator.Mediator;
 
 public sealed class Mediator(IServiceProvider serviceProvider) : ISender
 {

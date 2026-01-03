@@ -1,4 +1,4 @@
-namespace Phoenix.CustomMediator.Abstractions;
+namespace Phoenix.Mediator.Abstractions;
 
 public delegate Task<TResponse> RequestHandlerDelegate<TResponse>();
 public delegate Task RequestHandlerDelegate();

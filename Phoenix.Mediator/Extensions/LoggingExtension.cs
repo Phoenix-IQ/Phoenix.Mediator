@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Serilog;
@@ -9,7 +9,7 @@ using Serilog.Formatting.Compact;
 using System.Reflection;
 using System.Diagnostics;
 
-namespace Phoenix.CustomMediator.Extensions;
+namespace Phoenix.Mediator.Extensions;
 
 public static class LoggingExtensions
 {

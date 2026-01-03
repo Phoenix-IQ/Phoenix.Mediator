@@ -1,12 +1,12 @@
 using Microsoft.Extensions.DependencyInjection;
-using Phoenix.CustomMediator.Abstractions;
+using Phoenix.Mediator.Abstractions;
 using System.Reflection;
 
-namespace Phoenix.CustomMediator.Mediator;
+namespace Phoenix.Mediator.Mediator;
 
 public static class ServiceCollectionExtensions
 {
-    public static IServiceCollection AddCustomMediator(this IServiceCollection services)
+    public static IServiceCollection AddMediator(this IServiceCollection services)
     {
         services.AddHealthChecks();
         services.AddSingleton<Mediator>();
@@ -14,7 +14,7 @@ public static class ServiceCollectionExtensions
 
         // Pipelines:
         // - GetServices<T>() returns in registration order
-        // - CustomMediator wraps from the end, so:
+        // - Mediator wraps from the end, so:
         //   - first registered runs OUTERMOST (first to execute)
         //   - last registered runs INNERMOST (closest to the handler)
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(SentryBehavior<,>));
@@ -26,14 +26,14 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers CustomMediator plus request handlers found in the provided assemblies.
+    /// Registers Mediator plus request handlers found in the provided assemblies.
     /// </summary>
-    public static IServiceCollection AddCustomMediator(this IServiceCollection services, params Assembly[] assemblies)
+    public static IServiceCollection AddMediator(this IServiceCollection services, params Assembly[] assemblies)
     {
-        AddCustomMediator(services);
+        AddMediator(services);
 
         if (assemblies is { Length: > 0 })
-            services.AddCustomMediatorHandlers(assemblies);
+            services.AddMediatorHandlers(assemblies);
 
         return services;
     }
@@ -41,7 +41,7 @@ public static class ServiceCollectionExtensions
     /// <summary>
     /// Scans assemblies for IRequestHandler&lt;TRequest&gt; and IRequestHandler&lt;TRequest,TResponse&gt; implementations and registers them.
     /// </summary>
-    public static IServiceCollection AddCustomMediatorHandlers(this IServiceCollection services, params Assembly[] assemblies)
+    public static IServiceCollection AddMediatorHandlers(this IServiceCollection services, params Assembly[] assemblies)
     {
         if (assemblies is null || assemblies.Length == 0)
             throw new ArgumentException("At least one assembly must be provided.", nameof(assemblies));
@@ -70,6 +70,17 @@ public static class ServiceCollectionExtensions
 
         return services;
     }
+
+    [Obsolete("Use AddMediator(...) instead.")]
+    public static IServiceCollection AddCustomMediator(this IServiceCollection services) => AddMediator(services);
+
+    [Obsolete("Use AddMediator(...) instead.")]
+    public static IServiceCollection AddCustomMediator(this IServiceCollection services, params Assembly[] assemblies) =>
+        AddMediator(services, assemblies);
+
+    [Obsolete("Use AddMediatorHandlers(...) instead.")]
+    public static IServiceCollection AddCustomMediatorHandlers(this IServiceCollection services, params Assembly[] assemblies) =>
+        AddMediatorHandlers(services, assemblies);
 }
 
 
