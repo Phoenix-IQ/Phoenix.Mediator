@@ -4,32 +4,13 @@ using Phoenix.CustomMediator.Wrappers;
 
 namespace Phoenix.CustomMediator.Mediator;
 
-public sealed class ValidationBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TResponse>
-    where TRequest : IRequest<TResponse>
+public sealed class ValidationBehavior<TRequest, TResponse>(IEnumerable<IValidator<TRequest>> validators) : IPipelineBehavior<TRequest, TResponse> where TRequest : IRequest<TResponse>
 {
-    private readonly IEnumerable<IRequestValidator<TRequest>> _validators;
-    private readonly IEnumerable<IValidator<TRequest>> _fluentValidators;
 
-    public ValidationBehavior(IEnumerable<IRequestValidator<TRequest>> validators, IEnumerable<IValidator<TRequest>> fluentValidators)
-    {
-        _validators = validators;
-        _fluentValidators = fluentValidators;
-    }
-
-    public async Task<TResponse> Handle(TRequest request, CancellationToken cancellationToken, RequestHandlerDelegate<TResponse> next)
+    public async Task<TResponse> Handle(TRequest request, RequestHandlerDelegate<TResponse> next, CancellationToken cancellationToken)
     {
         var errors = new List<string>();
-        int? code = null;
-
-        foreach (var validator in _validators)
-        {
-            var result = await validator.ValidateAsync(request, cancellationToken).ConfigureAwait(false);
-            if (result is { Count: > 0 })
-                errors.AddRange(result);
-            code ??= validator.ErrorCode;
-        }
-
-        foreach (var validator in _fluentValidators)
+        foreach (var validator in validators)
         {
             var result = await validator.ValidateAsync(request, cancellationToken).ConfigureAwait(false);
             if (!result.IsValid)
@@ -37,38 +18,18 @@ public sealed class ValidationBehavior<TRequest, TResponse> : IPipelineBehavior<
         }
 
         if (errors.Count > 0)
-            throw new RequestValidationException(new ErrorsResponse(code ?? 400, errors));
+            throw new RequestValidationException(new ErrorsResponse(400, errors));
 
         return await next().ConfigureAwait(false);
     }
 }
 
-public sealed class ValidationBehavior<TRequest> : IPipelineBehavior<TRequest>
-    where TRequest : IRequest
+public sealed class ValidationBehavior<TRequest>(IEnumerable<IValidator<TRequest>> validators) : IPipelineBehavior<TRequest> where TRequest : IRequest
 {
-    private readonly IEnumerable<IRequestValidator<TRequest>> _validators;
-    private readonly IEnumerable<IValidator<TRequest>> _fluentValidators;
-
-    public ValidationBehavior(IEnumerable<IRequestValidator<TRequest>> validators, IEnumerable<IValidator<TRequest>> fluentValidators)
-    {
-        _validators = validators;
-        _fluentValidators = fluentValidators;
-    }
-
-    public async Task Handle(TRequest request, CancellationToken cancellationToken, RequestHandlerDelegate next)
+    public async Task Handle(TRequest request, RequestHandlerDelegate next, CancellationToken cancellationToken)
     {
         var errors = new List<string>();
-        int? code = null;
-
-        foreach (var validator in _validators)
-        {
-            var result = await validator.ValidateAsync(request, cancellationToken).ConfigureAwait(false);
-            if (result is { Count: > 0 })
-                errors.AddRange(result);
-            code ??= validator.ErrorCode;
-        }
-
-        foreach (var validator in _fluentValidators)
+        foreach (var validator in validators)
         {
             var result = await validator.ValidateAsync(request, cancellationToken).ConfigureAwait(false);
             if (!result.IsValid)
@@ -76,7 +37,7 @@ public sealed class ValidationBehavior<TRequest> : IPipelineBehavior<TRequest>
         }
 
         if (errors.Count > 0)
-            throw new RequestValidationException(new ErrorsResponse(code ?? 400, errors));
+            throw new RequestValidationException(new ErrorsResponse(400, errors));
 
         await next().ConfigureAwait(false);
     }

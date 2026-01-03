@@ -1,13 +1,11 @@
 namespace Phoenix.CustomMediator.Abstractions;
 
-public interface IRequestHandler<in TRequest, TResponse>
-    where TRequest : IRequest<TResponse>
+public interface IRequestHandler<in TRequest, TResponse> where TRequest : IRequest<TResponse>
 {
     Task<TResponse> Handle(TRequest request, CancellationToken cancellationToken);
 }
 
-public interface IRequestHandler<in TRequest>
-    where TRequest : IRequest
+public interface IRequestHandler<in TRequest> where TRequest : IRequest
 {
     Task Handle(TRequest request, CancellationToken cancellationToken);
 }

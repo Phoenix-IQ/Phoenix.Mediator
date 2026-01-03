@@ -96,7 +96,7 @@ public sealed class CustomMediator : ISender
         {
             var behavior = behaviors[i];
             var currentNext = next;
-            next = () => behavior.Handle(request, cancellationToken, currentNext);
+            next = () => behavior.Handle(request, currentNext, cancellationToken);
         }
 
         return await next().ConfigureAwait(false);
@@ -114,7 +114,7 @@ public sealed class CustomMediator : ISender
         {
             var behavior = behaviors[i];
             var currentNext = next;
-            next = () => behavior.Handle(request, cancellationToken, currentNext);
+            next = () => behavior.Handle(request, currentNext, cancellationToken);
         }
 
         await next().ConfigureAwait(false);

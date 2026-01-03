@@ -10,7 +10,13 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<CustomMediator>();
         services.AddSingleton<ISender>(sp => sp.GetRequiredService<CustomMediator>());
 
-        // Pipelines (order = registration order; last registered runs closest to handler)
+        // Pipelines:
+        // - GetServices<T>() returns in registration order
+        // - CustomMediator wraps from the end, so:
+        //   - first registered runs OUTERMOST (first to execute)
+        //   - last registered runs INNERMOST (closest to the handler)
+        services.AddTransient(typeof(IPipelineBehavior<,>), typeof(SentryBehavior<,>));
+        services.AddTransient(typeof(IPipelineBehavior<>), typeof(SentryBehavior<>));
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
         services.AddTransient(typeof(IPipelineBehavior<>), typeof(ValidationBehavior<>));
 
