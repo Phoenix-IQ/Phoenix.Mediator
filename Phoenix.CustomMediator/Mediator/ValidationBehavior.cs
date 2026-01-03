@@ -18,7 +18,7 @@ public sealed class ValidationBehavior<TRequest, TResponse>(IEnumerable<IValidat
         }
 
         if (errors.Count > 0)
-            throw new RequestValidationException(new ErrorsResponse(400, errors));
+            throw new RequestValidationException(new ErrorsResponse(errors));
 
         return await next().ConfigureAwait(false);
     }
@@ -37,7 +37,7 @@ public sealed class ValidationBehavior<TRequest>(IEnumerable<IValidator<TRequest
         }
 
         if (errors.Count > 0)
-            throw new RequestValidationException(new ErrorsResponse(400, errors));
+            throw new RequestValidationException(new ErrorsResponse(errors));
 
         await next().ConfigureAwait(false);
     }

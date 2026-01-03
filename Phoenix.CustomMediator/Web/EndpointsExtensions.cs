@@ -150,6 +150,124 @@ public static class EndpointsExtensions
     }
 
     // --------------------
+    // MEDIATOR MULTIPART (AUTO RESULT MAPPING)
+    // --------------------
+    public static RouteHandlerBuilder PostMultiPartMediator<TRequest, TResponse>(
+        this IEndpointRouteBuilder builder,
+        string pattern,
+        long maxRequestBodySize = 5_000_000,
+        int timeoutSeconds = 1)
+        where TRequest : IRequest<TResponse>
+    {
+        var rhb = builder.MapPost(pattern, async (ISender sender, [FromForm] TRequest request, CancellationToken ct) =>
+                (await sender.Send(request, ct).ConfigureAwait(false)).ToApiResult())
+            .DisableAntiforgery()
+            .AddResponses()
+            .Accepts<IFormFile>("multipart/form-data")
+            .Accepts<IFormFileCollection>("multipart/form-data")
+            .WithMetadata(new RequestSizeLimitAttribute(maxRequestBodySize));
+
+        rhb.WithRequestTimeout(TimeSpan.FromSeconds(timeoutSeconds));
+        return rhb.Produces<TResponse>(statusCode: 200);
+    }
+
+    public static RouteHandlerBuilder PutMultiPartMediator<TRequest, TResponse>(
+        this IEndpointRouteBuilder builder,
+        string pattern,
+        long maxRequestBodySize = 5_000_000,
+        int timeoutSeconds = 120)
+        where TRequest : IRequest<TResponse>
+    {
+        var rhb = builder.MapPut(pattern, async (ISender sender, [FromForm] TRequest request, CancellationToken ct) =>
+                (await sender.Send(request, ct).ConfigureAwait(false)).ToApiResult())
+            .DisableAntiforgery()
+            .AddResponses()
+            .Accepts<IFormFile>("multipart/form-data")
+            .Accepts<IFormFileCollection>("multipart/form-data")
+            .WithMetadata(new RequestSizeLimitAttribute(maxRequestBodySize));
+
+        rhb.WithRequestTimeout(TimeSpan.FromSeconds(timeoutSeconds));
+        return rhb.Produces<TResponse>(statusCode: 200);
+    }
+
+    public static RouteHandlerBuilder PatchMultiPartMediator<TRequest, TResponse>(
+        this IEndpointRouteBuilder builder,
+        string pattern,
+        long maxRequestBodySize = 5_000_000,
+        int timeoutSeconds = 120)
+        where TRequest : IRequest<TResponse>
+    {
+        var rhb = builder.MapPatch(pattern, async (ISender sender, [FromForm] TRequest request, CancellationToken ct) =>
+                (await sender.Send(request, ct).ConfigureAwait(false)).ToApiResult())
+            .DisableAntiforgery()
+            .AddResponses()
+            .Accepts<IFormFile>("multipart/form-data")
+            .Accepts<IFormFileCollection>("multipart/form-data")
+            .WithMetadata(new RequestSizeLimitAttribute(maxRequestBodySize));
+
+        rhb.WithRequestTimeout(TimeSpan.FromSeconds(timeoutSeconds));
+        return rhb.Produces<TResponse>(statusCode: 200);
+    }
+
+    // No-response multipart variants (IRequest => 204 on success)
+    public static RouteHandlerBuilder PostMultiPartMediator<TRequest>(
+        this IEndpointRouteBuilder builder,
+        string pattern,
+        long maxRequestBodySize = 5_000_000,
+        int timeoutSeconds = 1)
+        where TRequest : IRequest
+    {
+        var rhb = builder.MapPost(pattern, async (ISender sender, [FromForm] TRequest request, CancellationToken ct) =>
+                (await sender.Send(request, ct).ConfigureAwait(false)).ToApiResult())
+            .DisableAntiforgery()
+            .AddResponses()
+            .Accepts<IFormFile>("multipart/form-data")
+            .Accepts<IFormFileCollection>("multipart/form-data")
+            .WithMetadata(new RequestSizeLimitAttribute(maxRequestBodySize));
+
+        rhb.WithRequestTimeout(TimeSpan.FromSeconds(timeoutSeconds));
+        return rhb.Produces(statusCode: 204);
+    }
+
+    public static RouteHandlerBuilder PutMultiPartMediator<TRequest>(
+        this IEndpointRouteBuilder builder,
+        string pattern,
+        long maxRequestBodySize = 5_000_000,
+        int timeoutSeconds = 120)
+        where TRequest : IRequest
+    {
+        var rhb = builder.MapPut(pattern, async (ISender sender, [FromForm] TRequest request, CancellationToken ct) =>
+                (await sender.Send(request, ct).ConfigureAwait(false)).ToApiResult())
+            .DisableAntiforgery()
+            .AddResponses()
+            .Accepts<IFormFile>("multipart/form-data")
+            .Accepts<IFormFileCollection>("multipart/form-data")
+            .WithMetadata(new RequestSizeLimitAttribute(maxRequestBodySize));
+
+        rhb.WithRequestTimeout(TimeSpan.FromSeconds(timeoutSeconds));
+        return rhb.Produces(statusCode: 204);
+    }
+
+    public static RouteHandlerBuilder PatchMultiPartMediator<TRequest>(
+        this IEndpointRouteBuilder builder,
+        string pattern,
+        long maxRequestBodySize = 5_000_000,
+        int timeoutSeconds = 120)
+        where TRequest : IRequest
+    {
+        var rhb = builder.MapPatch(pattern, async (ISender sender, [FromForm] TRequest request, CancellationToken ct) =>
+                (await sender.Send(request, ct).ConfigureAwait(false)).ToApiResult())
+            .DisableAntiforgery()
+            .AddResponses()
+            .Accepts<IFormFile>("multipart/form-data")
+            .Accepts<IFormFileCollection>("multipart/form-data")
+            .WithMetadata(new RequestSizeLimitAttribute(maxRequestBodySize));
+
+        rhb.WithRequestTimeout(TimeSpan.FromSeconds(timeoutSeconds));
+        return rhb.Produces(statusCode: 204);
+    }
+
+    // --------------------
     // MEDIATOR (AUTO RESULT MAPPING)
     // --------------------
     public static RouteHandlerBuilder GetMediator<TRequest, TResponse>(this IEndpointRouteBuilder builder, string pattern)

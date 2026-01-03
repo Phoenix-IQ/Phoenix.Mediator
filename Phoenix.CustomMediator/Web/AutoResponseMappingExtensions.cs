@@ -8,7 +8,7 @@ public static class AutoResponseMappingExtensions
     /// <summary>
     /// Maps mediator outputs to minimal-api results:
     /// - null => 204 NoContent
-    /// - ErrorsResponse => status = ErrorCode (and body = ErrorsResponse)
+    /// - ErrorsResponse => 200 OK (and body = ErrorsResponse) [override if you want typed status codes]
     /// - otherwise => 200 OK (and body = value)
     /// </summary>
     public static IResult ToApiResult(this object? value)
@@ -16,7 +16,7 @@ public static class AutoResponseMappingExtensions
         return value switch
         {
             null => Results.NoContent(),
-            ErrorsResponse errors => Results.Json(errors, statusCode: errors.ErrorCode),
+            ErrorsResponse errors => Results.Json(errors),
             _ => Results.Ok(value)
         };
     }

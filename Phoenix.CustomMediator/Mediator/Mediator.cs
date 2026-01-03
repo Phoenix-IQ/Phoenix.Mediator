@@ -2,25 +2,19 @@ using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using Phoenix.CustomMediator.Abstractions;
 using Phoenix.CustomMediator.Wrappers;
+using Serilog;
 
 namespace Phoenix.CustomMediator.Mediator;
 
-public sealed class CustomMediator : ISender
+public sealed class Mediator(IServiceProvider serviceProvider) : ISender
 {
-    private readonly IServiceProvider _serviceProvider;
-
     private static readonly MethodInfo SendBoxedMethod =
-        typeof(CustomMediator).GetMethod(nameof(SendBoxed), BindingFlags.Instance | BindingFlags.NonPublic)
+        typeof(Mediator).GetMethod(nameof(SendBoxed), BindingFlags.Instance | BindingFlags.NonPublic)
         ?? throw new InvalidOperationException("Missing SendBoxed method.");
 
     private static readonly MethodInfo SendVoidBoxedMethod =
-        typeof(CustomMediator).GetMethod(nameof(SendVoidBoxed), BindingFlags.Instance | BindingFlags.NonPublic)
+        typeof(Mediator).GetMethod(nameof(SendVoidBoxed), BindingFlags.Instance | BindingFlags.NonPublic)
         ?? throw new InvalidOperationException("Missing SendVoidBoxed method.");
-
-    public CustomMediator(IServiceProvider serviceProvider)
-    {
-        _serviceProvider = serviceProvider;
-    }
 
     public async Task<object?> Send(object request, CancellationToken cancellationToken = default)
     {
@@ -47,8 +41,7 @@ public sealed class CustomMediator : ISender
         throw new ArgumentException($"Request type '{requestType.FullName}' must implement IRequest or IRequest<TResponse>.", nameof(request));
     }
 
-    private async Task<object?> SendBoxed<TRequest, TResponse>(TRequest request, CancellationToken cancellationToken)
-        where TRequest : IRequest<TResponse>
+    private async Task<object?> SendBoxed<TRequest, TResponse>(TRequest request, CancellationToken cancellationToken) where TRequest : IRequest<TResponse>
     {
         try
         {
@@ -62,16 +55,16 @@ public sealed class CustomMediator : ISender
         }
         catch (Exception ex)
         {
-            return new ErrorsResponse(500, new[] { ex.Message });
+            Log.Error(ex,"exception {ex}");
+            return new ErrorsResponse(["Unkown error occured"]);
         }
     }
 
-    private async Task<object?> SendVoidBoxed<TRequest>(TRequest request, CancellationToken cancellationToken)
-        where TRequest : IRequest
+    private async Task<object?> SendVoidBoxed<TRequest>(TRequest request, CancellationToken cancellationToken) where TRequest : IRequest
     {
         try
         {
-            await SendInternalVoid<TRequest>(request, cancellationToken).ConfigureAwait(false);
+            await SendInternalVoid(request, cancellationToken).ConfigureAwait(false);
             return null;
         }
         catch (RequestValidationException vex)
@@ -80,15 +73,16 @@ public sealed class CustomMediator : ISender
         }
         catch (Exception ex)
         {
-            return new ErrorsResponse(500, new[] { ex.Message });
+            Log.Error(ex, "exception {ex}");
+            return new ErrorsResponse(["Unkown error occured"]);
         }
     }
 
     private async Task<TResponse> SendInternal<TRequest, TResponse>(TRequest request, CancellationToken cancellationToken)
         where TRequest : IRequest<TResponse>
     {
-        var handler = _serviceProvider.GetRequiredService<IRequestHandler<TRequest, TResponse>>();
-        var behaviors = _serviceProvider.GetServices<IPipelineBehavior<TRequest, TResponse>>().ToArray();
+        var handler = serviceProvider.GetRequiredService<IRequestHandler<TRequest, TResponse>>();
+        var behaviors = serviceProvider.GetServices<IPipelineBehavior<TRequest, TResponse>>().ToArray();
 
         RequestHandlerDelegate<TResponse> next = () => handler.Handle(request, cancellationToken);
 
@@ -102,11 +96,10 @@ public sealed class CustomMediator : ISender
         return await next().ConfigureAwait(false);
     }
 
-    private async Task SendInternalVoid<TRequest>(TRequest request, CancellationToken cancellationToken)
-        where TRequest : IRequest
+    private async Task SendInternalVoid<TRequest>(TRequest request, CancellationToken cancellationToken) where TRequest : IRequest
     {
-        var handler = _serviceProvider.GetRequiredService<IRequestHandler<TRequest>>();
-        var behaviors = _serviceProvider.GetServices<IPipelineBehavior<TRequest>>().ToArray();
+        var handler = serviceProvider.GetRequiredService<IRequestHandler<TRequest>>();
+        var behaviors = serviceProvider.GetServices<IPipelineBehavior<TRequest>>().ToArray();
 
         RequestHandlerDelegate next = () => handler.Handle(request, cancellationToken);
 

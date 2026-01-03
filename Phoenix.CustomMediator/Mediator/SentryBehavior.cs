@@ -2,10 +2,14 @@
 
 namespace Phoenix.CustomMediator.Mediator;
 
-public sealed class SentryBehavior<TRequest, TResponse>(IHub hub) : IPipelineBehavior<TRequest, TResponse>where TRequest : IRequest<TResponse>
+public sealed class SentryBehavior<TRequest, TResponse>(IHub? hub = null) : IPipelineBehavior<TRequest, TResponse>
+    where TRequest : IRequest<TResponse>
 {
-    public async Task<TResponse> Handle(TRequest request,RequestHandlerDelegate<TResponse> next,CancellationToken cancellationToken)
+    public async Task<TResponse> Handle(TRequest request, RequestHandlerDelegate<TResponse> next, CancellationToken cancellationToken)
     {
+        if (hub is null)
+            return await next().ConfigureAwait(false);
+
         var name = typeof(TRequest).Name;
 
         var tx = hub.StartTransaction(name, "mediator.request");
@@ -14,7 +18,7 @@ public sealed class SentryBehavior<TRequest, TResponse>(IHub hub) : IPipelineBeh
 
         try
         {
-            var response = await next();
+            var response = await next().ConfigureAwait(false);
             tx.Finish(SpanStatus.Ok);
             return response;
         }
@@ -38,10 +42,17 @@ public sealed class SentryBehavior<TRequest, TResponse>(IHub hub) : IPipelineBeh
     }
 }
 
-public sealed class SentryBehavior<TRequest>(IHub hub) : IPipelineBehavior<TRequest> where TRequest : IRequest
+public sealed class SentryBehavior<TRequest>(IHub? hub = null) : IPipelineBehavior<TRequest>
+    where TRequest : IRequest
 {
-    public async Task Handle(TRequest request,RequestHandlerDelegate next,CancellationToken cancellationToken)
+    public async Task Handle(TRequest request, RequestHandlerDelegate next, CancellationToken cancellationToken)
     {
+        if (hub is null)
+        {
+            await next().ConfigureAwait(false);
+            return;
+        }
+
         var name = typeof(TRequest).Name;
 
         var tx = hub.StartTransaction(name, "mediator.request");
