@@ -15,6 +15,8 @@ services.AddMediator();
 // or: services.AddMediator(typeof(SomeHandler).Assembly);
 ```
 
+> Note: `ISender` is registered as a **scoped** service so handlers can safely depend on scoped services (e.g. `DbContext`, current-user services).
+
 Send requests:
 
 ```csharp

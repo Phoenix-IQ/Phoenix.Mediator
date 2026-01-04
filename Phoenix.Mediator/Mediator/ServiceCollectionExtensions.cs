@@ -9,8 +9,10 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddMediator(this IServiceCollection services)
     {
         services.AddHealthChecks();
-        services.AddSingleton<Mediator>();
-        services.AddSingleton<ISender>(sp => sp.GetRequiredService<Mediator>());
+        // IMPORTANT: Mediator must be scoped so request handlers can depend on scoped services
+        // (e.g. current user, DbContext, HttpContext-related services).
+        services.AddScoped<Mediator>();
+        services.AddScoped<ISender>(sp => sp.GetRequiredService<Mediator>());
 
         // Pipelines:
         // - GetServices<T>() returns in registration order
