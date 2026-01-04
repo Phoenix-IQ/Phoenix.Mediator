@@ -1,8 +1,6 @@
 namespace Phoenix.Mediator.Wrappers;
 
-public class SingleResponse<T>
+public class SingleResponse<T>(T result)
 {
-    public int StatusCode { get; set; } = 200;
-    public string Message { get; set; } = "ok";
-    public T? Result { get; set; } 
+    public T? Result => result;
 }
