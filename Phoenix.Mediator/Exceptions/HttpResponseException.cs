@@ -3,8 +3,8 @@ using System.Net;
 
 namespace Phoenix.Mediator.Exceptions;
 
-public sealed class HttpResponseException(ErrorResponse errorsResponse) : Exception
+public class HttpResponseException(ErrorResponse errorResponse) : Exception
 {
-    public HttpStatusCode HttpStatusCode => errorsResponse.HttpStatusCode;
-    public IReadOnlyList<string> Errors => errorsResponse.Errors;
+    public HttpStatusCode HttpStatusCode => errorResponse.HttpStatusCode;
+    public IReadOnlyList<string> Errors => errorResponse.Errors;
 }
