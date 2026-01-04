@@ -1,5 +1,6 @@
 using System.Net;
+using System.Text.Json.Serialization;
 
 namespace Phoenix.Mediator.Wrappers;
 
-public record ErrorResponse(HttpStatusCode HttpStatusCode,IReadOnlyList<string> Errors);
+public record ErrorResponse(HttpStatusCode HttpStatusCode, IReadOnlyList<string> Errors);

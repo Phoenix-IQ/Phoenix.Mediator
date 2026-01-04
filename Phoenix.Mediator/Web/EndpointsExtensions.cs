@@ -50,8 +50,9 @@ public static class EndpointsExtensions
     {
         handler.Produces(statusCode: 401);
         handler.Produces(statusCode: 403);
-        handler.Produces<ErrorResponse>(statusCode: 400);
-        handler.Produces<ErrorResponse>(statusCode: 500);
+        // Error body is always { "errors": [...] } (status code comes from HTTP status).
+        handler.Produces<ErrorsResponse>(statusCode: 400, contentType: "application/json");
+        handler.Produces<ErrorsResponse>(statusCode: 500, contentType: "application/json");
         return handler;
     }
 
@@ -170,7 +171,7 @@ public static class EndpointsExtensions
         rhb.WithRequestTimeout(TimeSpan.FromSeconds(timeoutSeconds));
         // Mediator can return null => 204 via ToApiResult()
         return rhb
-            .Produces<TResponse>(statusCode: 200)
+            .Produces<TResponse>(statusCode: 200, contentType: "application/json")
             .Produces(statusCode: 204);
     }
 
@@ -192,7 +193,7 @@ public static class EndpointsExtensions
         rhb.WithRequestTimeout(TimeSpan.FromSeconds(timeoutSeconds));
         // Mediator can return null => 204 via ToApiResult()
         return rhb
-            .Produces<TResponse>(statusCode: 200)
+            .Produces<TResponse>(statusCode: 200, contentType: "application/json")
             .Produces(statusCode: 204);
     }
 
@@ -214,7 +215,7 @@ public static class EndpointsExtensions
         rhb.WithRequestTimeout(TimeSpan.FromSeconds(timeoutSeconds));
         // Mediator can return null => 204 via ToApiResult()
         return rhb
-            .Produces<TResponse>(statusCode: 200)
+            .Produces<TResponse>(statusCode: 200, contentType: "application/json")
             .Produces(statusCode: 204);
     }
 
@@ -286,7 +287,7 @@ public static class EndpointsExtensions
                 (await sender.Send(request, ct).ConfigureAwait(false)).ToApiResult())
             .AddResponses()
             // Mediator can return null => 204 via ToApiResult()
-            .Produces<TResponse>(statusCode: 200)
+            .Produces<TResponse>(statusCode: 200, contentType: "application/json")
             .Produces(statusCode: 204);
     }
 
@@ -297,7 +298,7 @@ public static class EndpointsExtensions
                 (await sender.Send(request, ct).ConfigureAwait(false)).ToApiResult())
             .AddResponses()
             // Mediator can return null => 204 via ToApiResult()
-            .Produces<TResponse>(statusCode: 200)
+            .Produces<TResponse>(statusCode: 200, contentType: "application/json")
             .Produces(statusCode: 204);
     }
 
@@ -308,7 +309,7 @@ public static class EndpointsExtensions
                 (await sender.Send(request, ct).ConfigureAwait(false)).ToApiResult())
             .AddResponses()
             // Mediator can return null => 204 via ToApiResult()
-            .Produces<TResponse>(statusCode: 200)
+            .Produces<TResponse>(statusCode: 200, contentType: "application/json")
             .Produces(statusCode: 204);
     }
 
@@ -319,7 +320,7 @@ public static class EndpointsExtensions
                 (await sender.Send(request, ct).ConfigureAwait(false)).ToApiResult())
             .AddResponses()
             // Mediator can return null => 204 via ToApiResult()
-            .Produces<TResponse>(statusCode: 200)
+            .Produces<TResponse>(statusCode: 200, contentType: "application/json")
             .Produces(statusCode: 204);
     }
 
@@ -330,7 +331,7 @@ public static class EndpointsExtensions
                 (await sender.Send(request, ct).ConfigureAwait(false)).ToApiResult())
             .AddResponses()
             // Mediator can return null => 204 via ToApiResult()
-            .Produces<TResponse>(statusCode: 200)
+            .Produces<TResponse>(statusCode: 200, contentType: "application/json")
             .Produces(statusCode: 204);
     }
 

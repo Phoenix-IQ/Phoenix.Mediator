@@ -18,8 +18,9 @@ public static class AutoResponseMappingExtensions
         {
             null => Results.NoContent(),
             IResult result => result,
-            ErrorResponse errors => Results.Json(errors, statusCode: (int)errors.HttpStatusCode),
-            _ => Results.Ok(value)
+            ErrorResponse errors => Results.Json(new ErrorsResponse(errors.Errors), statusCode: (int)errors.HttpStatusCode),
+            // Always return JSON so Swagger/clients consistently get the documented content-type/schema.
+            _ => Results.Json(value)
         };
     }
 }
