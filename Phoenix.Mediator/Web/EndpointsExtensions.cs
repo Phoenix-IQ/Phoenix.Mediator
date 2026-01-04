@@ -50,8 +50,8 @@ public static class EndpointsExtensions
     {
         handler.Produces(statusCode: 401);
         handler.Produces(statusCode: 403);
-        handler.Produces<ErrorsResponse>(statusCode: 400);
-        handler.Produces<ErrorsResponse>(statusCode: 500);
+        handler.Produces<ErrorResponse>(statusCode: 400);
+        handler.Produces<ErrorResponse>(statusCode: 500);
         return handler;
     }
 

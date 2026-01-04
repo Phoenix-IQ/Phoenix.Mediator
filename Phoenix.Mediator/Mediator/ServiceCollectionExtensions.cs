@@ -70,17 +70,6 @@ public static class ServiceCollectionExtensions
 
         return services;
     }
-
-    [Obsolete("Use AddMediator(...) instead.")]
-    public static IServiceCollection AddCustomMediator(this IServiceCollection services) => AddMediator(services);
-
-    [Obsolete("Use AddMediator(...) instead.")]
-    public static IServiceCollection AddCustomMediator(this IServiceCollection services, params Assembly[] assemblies) =>
-        AddMediator(services, assemblies);
-
-    [Obsolete("Use AddMediatorHandlers(...) instead.")]
-    public static IServiceCollection AddCustomMediatorHandlers(this IServiceCollection services, params Assembly[] assemblies) =>
-        AddMediatorHandlers(services, assemblies);
 }
 
 

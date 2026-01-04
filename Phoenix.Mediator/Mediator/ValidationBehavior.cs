@@ -1,5 +1,6 @@
 using FluentValidation;
 using Phoenix.Mediator.Abstractions;
+using Phoenix.Mediator.Exceptions;
 using Phoenix.Mediator.Wrappers;
 
 namespace Phoenix.Mediator.Mediator;
@@ -18,7 +19,7 @@ public sealed class ValidationBehavior<TRequest, TResponse>(IEnumerable<IValidat
         }
 
         if (errors.Count > 0)
-            throw new RequestValidationException(new ErrorsResponse(errors));
+            throw new HttpResponseException(new ErrorResponse(System.Net.HttpStatusCode.BadRequest, errors));
 
         return await next().ConfigureAwait(false);
     }
@@ -37,7 +38,7 @@ public sealed class ValidationBehavior<TRequest>(IEnumerable<IValidator<TRequest
         }
 
         if (errors.Count > 0)
-            throw new RequestValidationException(new ErrorsResponse(errors));
+            throw new HttpResponseException(new ErrorResponse(System.Net.HttpStatusCode.BadRequest,errors));
 
         await next().ConfigureAwait(false);
     }

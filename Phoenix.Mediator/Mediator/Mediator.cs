@@ -1,6 +1,8 @@
 using System.Reflection;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Phoenix.Mediator.Abstractions;
+using Phoenix.Mediator.Exceptions;
 using Phoenix.Mediator.Wrappers;
 using Serilog;
 
@@ -49,14 +51,14 @@ public sealed class Mediator(IServiceProvider serviceProvider) : ISender
             EnsureOkMetadata(response);
             return response;
         }
-        catch (RequestValidationException vex)
+        catch (HttpResponseException httpResponseExcpetion)
         {
-            return vex.Errors;
+            return Results.Json(new { errors = httpResponseExcpetion.Errors },statusCode: (int)httpResponseExcpetion.HttpStatusCode);
         }
         catch (Exception ex)
         {
             Log.Error(ex,"exception {ex}");
-            return new ErrorsResponse(["Unkown error occured"]);
+            return Results.Json(new { errors = new string[] { "Unkown error occured" } }, statusCode: (int)System.Net.HttpStatusCode.InternalServerError);
         }
     }
 
@@ -67,14 +69,14 @@ public sealed class Mediator(IServiceProvider serviceProvider) : ISender
             await SendInternalVoid(request, cancellationToken).ConfigureAwait(false);
             return null;
         }
-        catch (RequestValidationException vex)
+        catch (HttpResponseException httpResponseExcpetion)
         {
-            return vex.Errors;
+            return Results.Json(new { errors = httpResponseExcpetion.Errors }, statusCode: (int)httpResponseExcpetion.HttpStatusCode);
         }
         catch (Exception ex)
         {
             Log.Error(ex, "exception {ex}");
-            return new ErrorsResponse(["Unkown error occured"]);
+            return Results.Json(new { errors = new string[] { "Unkown error occured" } }, statusCode: (int)System.Net.HttpStatusCode.InternalServerError);
         }
     }
 
@@ -117,7 +119,7 @@ public sealed class Mediator(IServiceProvider serviceProvider) : ISender
     {
         if (response is null) return;
 
-        if (response is ErrorsResponse)
+        if (response is ErrorResponse)
             return;
 
         // Set StatusCode/Message when present (SingleResponse/MultiResponse).

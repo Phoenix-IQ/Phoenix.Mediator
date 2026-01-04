@@ -16,7 +16,7 @@ public static class AutoResponseMappingExtensions
         return value switch
         {
             null => Results.NoContent(),
-            ErrorsResponse errors => Results.Json(errors),
+            ErrorResponse errors => Results.Json(errors),
             _ => Results.Ok(value)
         };
     }
