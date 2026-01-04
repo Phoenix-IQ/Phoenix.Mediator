@@ -168,7 +168,10 @@ public static class EndpointsExtensions
             .WithMetadata(new RequestSizeLimitAttribute(maxRequestBodySize));
 
         rhb.WithRequestTimeout(TimeSpan.FromSeconds(timeoutSeconds));
-        return rhb.Produces<TResponse>(statusCode: 200);
+        // Mediator can return null => 204 via ToApiResult()
+        return rhb
+            .Produces<TResponse>(statusCode: 200)
+            .Produces(statusCode: 204);
     }
 
     public static RouteHandlerBuilder PutMultiPartMediator<TRequest, TResponse>(
@@ -187,7 +190,10 @@ public static class EndpointsExtensions
             .WithMetadata(new RequestSizeLimitAttribute(maxRequestBodySize));
 
         rhb.WithRequestTimeout(TimeSpan.FromSeconds(timeoutSeconds));
-        return rhb.Produces<TResponse>(statusCode: 200);
+        // Mediator can return null => 204 via ToApiResult()
+        return rhb
+            .Produces<TResponse>(statusCode: 200)
+            .Produces(statusCode: 204);
     }
 
     public static RouteHandlerBuilder PatchMultiPartMediator<TRequest, TResponse>(
@@ -206,7 +212,10 @@ public static class EndpointsExtensions
             .WithMetadata(new RequestSizeLimitAttribute(maxRequestBodySize));
 
         rhb.WithRequestTimeout(TimeSpan.FromSeconds(timeoutSeconds));
-        return rhb.Produces<TResponse>(statusCode: 200);
+        // Mediator can return null => 204 via ToApiResult()
+        return rhb
+            .Produces<TResponse>(statusCode: 200)
+            .Produces(statusCode: 204);
     }
 
     // No-response multipart variants (IRequest => 204 on success)
@@ -276,7 +285,9 @@ public static class EndpointsExtensions
         return builder.MapGet(pattern, async (ISender sender, TRequest request, CancellationToken ct) =>
                 (await sender.Send(request, ct).ConfigureAwait(false)).ToApiResult())
             .AddResponses()
-            .Produces<TResponse>(statusCode: 200);
+            // Mediator can return null => 204 via ToApiResult()
+            .Produces<TResponse>(statusCode: 200)
+            .Produces(statusCode: 204);
     }
 
     public static RouteHandlerBuilder PostMediator<TRequest, TResponse>(this IEndpointRouteBuilder builder, string pattern)
@@ -285,7 +296,9 @@ public static class EndpointsExtensions
         return builder.MapPost(pattern, async (ISender sender, TRequest request, CancellationToken ct) =>
                 (await sender.Send(request, ct).ConfigureAwait(false)).ToApiResult())
             .AddResponses()
-            .Produces<TResponse>(statusCode: 200);
+            // Mediator can return null => 204 via ToApiResult()
+            .Produces<TResponse>(statusCode: 200)
+            .Produces(statusCode: 204);
     }
 
     public static RouteHandlerBuilder PutMediator<TRequest, TResponse>(this IEndpointRouteBuilder builder, string pattern)
@@ -294,7 +307,9 @@ public static class EndpointsExtensions
         return builder.MapPut(pattern, async (ISender sender, TRequest request, CancellationToken ct) =>
                 (await sender.Send(request, ct).ConfigureAwait(false)).ToApiResult())
             .AddResponses()
-            .Produces<TResponse>(statusCode: 200);
+            // Mediator can return null => 204 via ToApiResult()
+            .Produces<TResponse>(statusCode: 200)
+            .Produces(statusCode: 204);
     }
 
     public static RouteHandlerBuilder PatchMediator<TRequest, TResponse>(this IEndpointRouteBuilder builder, string pattern)
@@ -303,7 +318,9 @@ public static class EndpointsExtensions
         return builder.MapPatch(pattern, async (ISender sender, TRequest request, CancellationToken ct) =>
                 (await sender.Send(request, ct).ConfigureAwait(false)).ToApiResult())
             .AddResponses()
-            .Produces<TResponse>(statusCode: 200);
+            // Mediator can return null => 204 via ToApiResult()
+            .Produces<TResponse>(statusCode: 200)
+            .Produces(statusCode: 204);
     }
 
     public static RouteHandlerBuilder DeleteMediator<TRequest, TResponse>(this IEndpointRouteBuilder builder, string pattern)
@@ -312,7 +329,9 @@ public static class EndpointsExtensions
         return builder.MapDelete(pattern, async (ISender sender, TRequest request, CancellationToken ct) =>
                 (await sender.Send(request, ct).ConfigureAwait(false)).ToApiResult())
             .AddResponses()
-            .Produces<TResponse>(statusCode: 200);
+            // Mediator can return null => 204 via ToApiResult()
+            .Produces<TResponse>(statusCode: 200)
+            .Produces(statusCode: 204);
     }
 
     // No-response request variants (IRequest => 204 on success)

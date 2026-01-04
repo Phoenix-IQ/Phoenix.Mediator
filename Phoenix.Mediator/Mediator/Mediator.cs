@@ -53,12 +53,12 @@ public sealed class Mediator(IServiceProvider serviceProvider) : ISender
         }
         catch (HttpResponseException httpResponseExcpetion)
         {
-            return Results.Json(new { errors = httpResponseExcpetion.Errors },statusCode: (int)httpResponseExcpetion.HttpStatusCode);
+            return new ErrorResponse(httpResponseExcpetion.HttpStatusCode, httpResponseExcpetion.Errors);
         }
         catch (Exception ex)
         {
-            Log.Error(ex,"exception {ex}");
-            return Results.Json(new { errors = new string[] { "Unkown error occured" } }, statusCode: (int)System.Net.HttpStatusCode.InternalServerError);
+            Log.Error(ex, "exception {ex}", ex);
+            return new ErrorResponse(System.Net.HttpStatusCode.InternalServerError, new[] { "Unknown error occurred" });
         }
     }
 
@@ -71,12 +71,12 @@ public sealed class Mediator(IServiceProvider serviceProvider) : ISender
         }
         catch (HttpResponseException httpResponseExcpetion)
         {
-            return Results.Json(new { errors = httpResponseExcpetion.Errors }, statusCode: (int)httpResponseExcpetion.HttpStatusCode);
+            return new ErrorResponse(httpResponseExcpetion.HttpStatusCode, httpResponseExcpetion.Errors);
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "exception {ex}");
-            return Results.Json(new { errors = new string[] { "Unkown error occured" } }, statusCode: (int)System.Net.HttpStatusCode.InternalServerError);
+            Log.Error(ex, "exception {ex}", ex);
+            return new ErrorResponse(System.Net.HttpStatusCode.InternalServerError, new[] { "Unknown error occurred" });
         }
     }
 
