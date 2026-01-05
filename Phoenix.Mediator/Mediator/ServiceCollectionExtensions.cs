@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using FluentValidation;
 using Phoenix.Mediator.Abstractions;
 using System.Reflection;
 
@@ -35,7 +36,10 @@ public static class ServiceCollectionExtensions
         AddMediator(services);
 
         if (assemblies is { Length: > 0 })
+        {
             services.AddMediatorHandlers(assemblies);
+            services.AddMediatorValidators(assemblies);
+        }
 
         return services;
     }
@@ -68,6 +72,23 @@ public static class ServiceCollectionExtensions
                     }
                 }
             }
+        }
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers FluentValidation validators (IValidator&lt;T&gt;/AbstractValidator&lt;T&gt;) found in the provided assemblies.
+    /// </summary>
+    public static IServiceCollection AddMediatorValidators(this IServiceCollection services, params Assembly[] assemblies)
+    {
+        if (assemblies is null || assemblies.Length == 0)
+            throw new ArgumentException("At least one assembly must be provided.", nameof(assemblies));
+
+        foreach (var assembly in assemblies.Distinct())
+        {
+            // Uses FluentValidation.DependencyInjectionExtensions
+            services.AddValidatorsFromAssembly(assembly);
         }
 
         return services;

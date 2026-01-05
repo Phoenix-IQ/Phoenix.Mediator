@@ -1,6 +1,5 @@
 <Solution>
   <Project Path="Phoenix.Mediator/Phoenix.Mediator.csproj" />
-  <Project Path="TestApi/TestApi.csproj" Id="46f1da93-4f9d-44ef-b5f9-0380a83996aa" />
 </Solution>
 
 

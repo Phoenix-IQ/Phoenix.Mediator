@@ -17,6 +17,8 @@ services.AddMediator();
 
 > Note: `ISender` is registered as a **scoped** service so handlers can safely depend on scoped services (e.g. `DbContext`, current-user services).
 
+When you pass assemblies to `AddMediator(...)`, request handlers **and FluentValidation validators** from those assemblies are registered.
+
 Send requests:
 
 ```csharp
