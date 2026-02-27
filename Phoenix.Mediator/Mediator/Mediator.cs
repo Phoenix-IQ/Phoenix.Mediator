@@ -51,9 +51,12 @@ public sealed class Mediator(IServiceProvider serviceProvider) : ISender
             EnsureOkMetadata(response);
             return response;
         }
-        catch (HttpResponseException httpResponseExcpetion)
+        catch (HttpResponseException httpResponseException)
         {
-            return Results.BadRequest(new ErrorsResponse(httpResponseExcpetion.Errors));
+            return Results.Json(
+                new ErrorsResponse(httpResponseException.Errors),
+                statusCode: (int)httpResponseException.HttpStatusCode
+            );
         }
         catch (Exception ex)
         {
@@ -72,9 +75,12 @@ public sealed class Mediator(IServiceProvider serviceProvider) : ISender
             await SendInternalVoid(request, cancellationToken).ConfigureAwait(false);
             return null;
         }
-        catch (HttpResponseException httpResponseExcpetion)
+        catch (HttpResponseException httpResponseException)
         {
-            return Results.BadRequest(new ErrorsResponse(httpResponseExcpetion.Errors));
+            return Results.Json(
+                new ErrorsResponse(httpResponseException.Errors),
+                statusCode: (int)httpResponseException.HttpStatusCode
+            );
         }
         catch (Exception ex)
         {

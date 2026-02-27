@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Phoenix.Mediator.Abstractions;
 using Phoenix.Mediator.Web.Dtos;
 using Phoenix.Mediator.Wrappers;
@@ -35,17 +36,50 @@ public static class EndpointsExtensions
             }
         });
         var endpointGroupType = typeof(BaseEndpointGroup);
-        var assembly = Assembly.GetCallingAssembly();
-        var endpointGroupTypes = assembly
-            .GetExportedTypes()
-            .Where(t => !t.IsAbstract && t.IsSubclassOf(endpointGroupType));
+        var endpointGroupTypes = GetEndpointAssemblies(app)
+            .SelectMany(GetLoadableTypes)
+            .Where(t => t.IsClass && !t.IsAbstract && endpointGroupType.IsAssignableFrom(t))
+            .Distinct();
 
         foreach (var type in endpointGroupTypes)
         {
-            if (Activator.CreateInstance(type) is BaseEndpointGroup instance)
-                instance.Map(app);
+            var instance = (BaseEndpointGroup)ActivatorUtilities.CreateInstance(app.Services, type);
+            instance.Map(app);
         }
         return app;
+    }
+
+    private static IEnumerable<Assembly> GetEndpointAssemblies(WebApplication app)
+    {
+        var assemblies = AppDomain.CurrentDomain.GetAssemblies();
+        var appAssemblyName = app.Environment.ApplicationName;
+
+        if (!string.IsNullOrWhiteSpace(appAssemblyName))
+        {
+            var appAssembly = assemblies.FirstOrDefault(a =>
+                string.Equals(a.GetName().Name, appAssemblyName, StringComparison.Ordinal));
+            if (appAssembly is not null)
+                yield return appAssembly;
+        }
+
+        var entryAssembly = Assembly.GetEntryAssembly();
+        if (entryAssembly is not null)
+            yield return entryAssembly;
+
+        // Fallback for hosting/test scenarios where entry assembly can be null.
+        yield return Assembly.GetCallingAssembly();
+    }
+
+    private static IEnumerable<Type> GetLoadableTypes(Assembly assembly)
+    {
+        try
+        {
+            return assembly.GetTypes();
+        }
+        catch (ReflectionTypeLoadException ex)
+        {
+            return ex.Types.Where(t => t is not null)!;
+        }
     }
 
     private static RouteHandlerBuilder AddResponses(this RouteHandlerBuilder handler, Delegate endpointHandler, ResponseDto[]? responses)
@@ -173,7 +207,7 @@ public static class EndpointsExtensions
     // --------------------
     // POST MULTIPART
     // --------------------
-    public static IEndpointRouteBuilder PostMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = 5_000_000, int timeoutSeconds = 1, ResponseDto[]? responseDtos = null)
+    public static IEndpointRouteBuilder PostMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = 5_000_000, int timeoutSeconds = 120, ResponseDto[]? responseDtos = null)
     {
         builder.MapPost(pattern, handler)
             .DisableAntiforgery()

@@ -1,4 +1,6 @@
 using Phoenix.Mediator.Abstractions;
+using Phoenix.Mediator.Exceptions;
+using System.Net;
 
 namespace Phoenix.Mediator.Mediator;
 
@@ -25,6 +27,21 @@ public sealed class SentryBehavior<TRequest, TResponse>(IHub? hub = null) : IPip
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             tx.Finish(SpanStatus.Cancelled);
+            throw;
+        }
+        catch (HttpResponseException ex)
+        {
+            tx.Finish(SentryBehaviorStatusMapper.Map(ex.HttpStatusCode));
+
+            if ((int)ex.HttpStatusCode >= 500)
+            {
+                hub.CaptureException(ex, scope =>
+                {
+                    scope.SetExtra("RequestType", name);
+                    scope.Level = SentryLevel.Error;
+                });
+            }
+
             throw;
         }
         catch (Exception ex)
@@ -69,6 +86,21 @@ public sealed class SentryBehavior<TRequest>(IHub? hub = null) : IPipelineBehavi
             tx.Finish(SpanStatus.Cancelled);
             throw;
         }
+        catch (HttpResponseException ex)
+        {
+            tx.Finish(SentryBehaviorStatusMapper.Map(ex.HttpStatusCode));
+
+            if ((int)ex.HttpStatusCode >= 500)
+            {
+                hub.CaptureException(ex, scope =>
+                {
+                    scope.SetExtra("RequestType", name);
+                    scope.Level = SentryLevel.Error;
+                });
+            }
+
+            throw;
+        }
         catch (Exception ex)
         {
             tx.Finish(SpanStatus.InternalError);
@@ -81,5 +113,27 @@ public sealed class SentryBehavior<TRequest>(IHub? hub = null) : IPipelineBehavi
 
             throw;
         }
+    }
+}
+
+internal static class SentryBehaviorStatusMapper
+{
+    public static SpanStatus Map(HttpStatusCode statusCode)
+    {
+        return statusCode switch
+        {
+            HttpStatusCode.BadRequest => SpanStatus.InvalidArgument,
+            HttpStatusCode.Unauthorized => SpanStatus.Unauthenticated,
+            HttpStatusCode.Forbidden => SpanStatus.PermissionDenied,
+            HttpStatusCode.NotFound => SpanStatus.NotFound,
+            HttpStatusCode.Conflict => SpanStatus.AlreadyExists,
+            HttpStatusCode.PreconditionFailed => SpanStatus.FailedPrecondition,
+            HttpStatusCode.RequestTimeout => SpanStatus.DeadlineExceeded,
+            HttpStatusCode.RequestedRangeNotSatisfiable => SpanStatus.OutOfRange,
+            HttpStatusCode.TooManyRequests => SpanStatus.ResourceExhausted,
+            HttpStatusCode.NotImplemented => SpanStatus.Unimplemented,
+            HttpStatusCode.ServiceUnavailable => SpanStatus.Unavailable,
+            _ => (int)statusCode >= 500 ? SpanStatus.InternalError : SpanStatus.UnknownError
+        };
     }
 }
