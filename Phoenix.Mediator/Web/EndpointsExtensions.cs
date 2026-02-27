@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
@@ -104,6 +105,23 @@ public static class EndpointsExtensions
                     handler.Produces(r.StatusCode);
                 else
                     handler.Produces(r.StatusCode, r.Type);
+            }
+
+            // Minimal APIs can infer a default 200 response from delegate return type
+            // (for example Task<object?>). Remove inferred 200 metadata when 200 is not declared.
+            var declares200 = successResponses.Any(r => r.StatusCode == StatusCodes.Status200OK);
+            if (!declares200)
+            {
+                handler.Add(endpointBuilder =>
+                {
+                    var metadataToRemove = endpointBuilder.Metadata
+                        .OfType<IProducesResponseTypeMetadata>()
+                        .Where(m => m.StatusCode == StatusCodes.Status200OK)
+                        .ToArray();
+
+                    foreach (var metadata in metadataToRemove)
+                        endpointBuilder.Metadata.Remove(metadata);
+                });
             }
         }
         return handler;

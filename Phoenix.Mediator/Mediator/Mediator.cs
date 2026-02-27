@@ -73,7 +73,7 @@ public sealed class Mediator(IServiceProvider serviceProvider) : ISender
         try
         {
             await SendInternalVoid(request, cancellationToken).ConfigureAwait(false);
-            return null;
+            return Results.NoContent();
         }
         catch (HttpResponseException httpResponseException)
         {

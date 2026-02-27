@@ -7,7 +7,7 @@ public interface ISender
     /// - SingleResponse{T}
     /// - MultiResponse{T}
     /// - ErrorsResponse (validation/global exception)
-    /// - null (no-content requests)
+    /// - IResult (e.g. 204 NoContent for no-content requests)
     /// </summary>
     Task<object?> Send(object request, CancellationToken cancellationToken = default);
 }
