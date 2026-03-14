@@ -48,7 +48,6 @@ public sealed class Mediator(IServiceProvider serviceProvider) : ISender
         try
         {
             var response = await SendInternal<TRequest, TResponse>(request, cancellationToken).ConfigureAwait(false);
-            EnsureOkMetadata(response);
             return response;
         }
         catch (HttpResponseException httpResponseException)
@@ -125,33 +124,6 @@ public sealed class Mediator(IServiceProvider serviceProvider) : ISender
         }
 
         await next().ConfigureAwait(false);
-    }
-
-    private static void EnsureOkMetadata(object? response)
-    {
-        if (response is null) return;
-
-        if (response is ErrorResponse)
-            return;
-
-        // Set StatusCode/Message when present (SingleResponse/MultiResponse).
-        var t = response.GetType();
-
-        var statusCodeProp = t.GetProperty("StatusCode");
-        if (statusCodeProp?.CanWrite == true)
-        {
-            var current = statusCodeProp.GetValue(response);
-            if (current is int i && i == 0)
-                statusCodeProp.SetValue(response, 200);
-        }
-
-        var messageProp = t.GetProperty("Message");
-        if (messageProp?.CanWrite == true)
-        {
-            var current = messageProp.GetValue(response);
-            if (current is null)
-                messageProp.SetValue(response, "ok");
-        }
     }
 }
 

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using FluentValidation;
 using Phoenix.Mediator.Abstractions;
 using System.Reflection;
@@ -9,21 +10,24 @@ public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddMediator(this IServiceCollection services)
     {
+        ArgumentNullException.ThrowIfNull(services);
+
         services.AddHealthChecks();
+        services.GetOrCreateAssemblyRegistry();
         // IMPORTANT: Mediator must be scoped so request handlers can depend on scoped services
         // (e.g. current user, DbContext, HttpContext-related services).
-        services.AddScoped<Mediator>();
-        services.AddScoped<ISender>(sp => sp.GetRequiredService<Mediator>());
+        services.TryAddScoped<Mediator>();
+        services.TryAddScoped<ISender, Mediator>();
 
         // Pipelines:
         // - GetServices<T>() returns in registration order
         // - Mediator wraps from the end, so:
         //   - first registered runs OUTERMOST (first to execute)
         //   - last registered runs INNERMOST (closest to the handler)
-        services.AddTransient(typeof(IPipelineBehavior<,>), typeof(SentryBehavior<,>));
-        services.AddTransient(typeof(IPipelineBehavior<>), typeof(SentryBehavior<>));
-        services.AddTransient(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
-        services.AddTransient(typeof(IPipelineBehavior<>), typeof(ValidationBehavior<>));
+        services.TryAddEnumerable(ServiceDescriptor.Transient(typeof(IPipelineBehavior<,>), typeof(SentryBehavior<,>)));
+        services.TryAddEnumerable(ServiceDescriptor.Transient(typeof(IPipelineBehavior<>), typeof(SentryBehavior<>)));
+        services.TryAddEnumerable(ServiceDescriptor.Transient(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>)));
+        services.TryAddEnumerable(ServiceDescriptor.Transient(typeof(IPipelineBehavior<>), typeof(ValidationBehavior<>)));
 
         return services;
     }
@@ -33,12 +37,20 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddMediator(this IServiceCollection services, params Assembly[] assemblies)
     {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(assemblies);
+
         AddMediator(services);
 
-        if (assemblies is { Length: > 0 })
+        if (assemblies.Length > 0)
         {
-            services.AddMediatorHandlers(assemblies);
-            services.AddMediatorValidators(assemblies);
+            var newAssemblies = services.GetOrCreateAssemblyRegistry().AddAssemblies(assemblies.Distinct());
+
+            if (newAssemblies.Length > 0)
+            {
+                services.AddMediatorHandlers(newAssemblies);
+                services.AddMediatorValidators(newAssemblies);
+            }
         }
 
         return services;
@@ -49,6 +61,8 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddMediatorHandlers(this IServiceCollection services, params Assembly[] assemblies)
     {
+        ArgumentNullException.ThrowIfNull(services);
+
         if (assemblies is null || assemblies.Length == 0)
             throw new ArgumentException("At least one assembly must be provided.", nameof(assemblies));
 
@@ -82,6 +96,8 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddMediatorValidators(this IServiceCollection services, params Assembly[] assemblies)
     {
+        ArgumentNullException.ThrowIfNull(services);
+
         if (assemblies is null || assemblies.Length == 0)
             throw new ArgumentException("At least one assembly must be provided.", nameof(assemblies));
 
@@ -92,6 +108,20 @@ public static class ServiceCollectionExtensions
         }
 
         return services;
+    }
+
+    private static MediatorAssemblyRegistry GetOrCreateAssemblyRegistry(this IServiceCollection services)
+    {
+        var existingRegistry = services
+            .FirstOrDefault(descriptor => descriptor.ServiceType == typeof(MediatorAssemblyRegistry))
+            ?.ImplementationInstance as MediatorAssemblyRegistry;
+
+        if (existingRegistry is not null)
+            return existingRegistry;
+
+        var registry = new MediatorAssemblyRegistry();
+        services.AddSingleton(registry);
+        return registry;
     }
 }
 

@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Phoenix.Mediator.Abstractions;
+using Phoenix.Mediator.Mediator;
 using Phoenix.Mediator.Web.Dtos;
 using Phoenix.Mediator.Wrappers;
 using System.Reflection;
@@ -15,8 +16,11 @@ namespace Phoenix.Mediator.Web;
 
 public static class EndpointsExtensions
 {
-    public static WebApplication MapEndpoints(this WebApplication app)
+    public static WebApplication MapEndpoints(this WebApplication app, params Assembly[] assemblies)
     {
+        ArgumentNullException.ThrowIfNull(app);
+        ArgumentNullException.ThrowIfNull(assemblies);
+
         app.MapHealthChecks("/health", new HealthCheckOptions
         {
             ResponseWriter = async (context, report) =>
@@ -37,38 +41,60 @@ public static class EndpointsExtensions
             }
         });
         var endpointGroupType = typeof(BaseEndpointGroup);
-        var endpointGroupTypes = GetEndpointAssemblies(app)
+        var endpointGroupTypes = GetEndpointAssemblies(app, assemblies)
             .SelectMany(GetLoadableTypes)
             .Where(t => t.IsClass && !t.IsAbstract && endpointGroupType.IsAssignableFrom(t))
             .Distinct();
 
         foreach (var type in endpointGroupTypes)
         {
-            var instance = (BaseEndpointGroup)ActivatorUtilities.CreateInstance(app.Services, type);
+            using var scope = app.Services.CreateScope();
+            var instance = (BaseEndpointGroup)ActivatorUtilities.CreateInstance(scope.ServiceProvider, type);
             instance.Map(app);
         }
         return app;
     }
 
-    private static IEnumerable<Assembly> GetEndpointAssemblies(WebApplication app)
+    private static IEnumerable<Assembly> GetEndpointAssemblies(WebApplication app, IReadOnlyCollection<Assembly> additionalAssemblies)
     {
-        var assemblies = AppDomain.CurrentDomain.GetAssemblies();
-        var appAssemblyName = app.Environment.ApplicationName;
+        var knownAssemblies = new HashSet<Assembly>();
+        var loadedAssemblies = AppDomain.CurrentDomain.GetAssemblies();
 
-        if (!string.IsNullOrWhiteSpace(appAssemblyName))
+        if (!string.IsNullOrWhiteSpace(app.Environment.ApplicationName))
         {
-            var appAssembly = assemblies.FirstOrDefault(a =>
-                string.Equals(a.GetName().Name, appAssemblyName, StringComparison.Ordinal));
-            if (appAssembly is not null)
-                yield return appAssembly;
+            var appAssembly = loadedAssemblies.FirstOrDefault(assembly =>
+                string.Equals(assembly.GetName().Name, app.Environment.ApplicationName, StringComparison.Ordinal));
+
+            if (IsEndpointAssembly(appAssembly))
+                knownAssemblies.Add(appAssembly!);
         }
 
         var entryAssembly = Assembly.GetEntryAssembly();
-        if (entryAssembly is not null)
-            yield return entryAssembly;
+        if (IsEndpointAssembly(entryAssembly))
+            knownAssemblies.Add(entryAssembly!);
 
-        // Fallback for hosting/test scenarios where entry assembly can be null.
-        yield return Assembly.GetCallingAssembly();
+        var registry = app.Services.GetService<MediatorAssemblyRegistry>();
+        if (registry is not null)
+        {
+            foreach (var assembly in registry.GetAssemblies())
+            {
+                if (IsEndpointAssembly(assembly))
+                    knownAssemblies.Add(assembly);
+            }
+        }
+
+        foreach (var assembly in additionalAssemblies)
+        {
+            if (IsEndpointAssembly(assembly))
+                knownAssemblies.Add(assembly);
+        }
+
+        return knownAssemblies;
+    }
+
+    private static bool IsEndpointAssembly(Assembly? assembly)
+    {
+        return assembly is not null && !assembly.IsDynamic;
     }
 
     private static IEnumerable<Type> GetLoadableTypes(Assembly assembly)

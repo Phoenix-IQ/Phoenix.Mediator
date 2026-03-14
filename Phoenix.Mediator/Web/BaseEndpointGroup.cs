@@ -3,7 +3,8 @@ using Microsoft.AspNetCore.Builder;
 namespace Phoenix.Mediator.Web;
 /// <summary>
 /// Base class for grouping endpoints using minimal APIs.
-/// Supports DI through constructor injection in derived groups.
+/// Supports constructor injection for services needed while endpoints are being mapped.
+/// Prefer handler-parameter injection for request-scoped services used at execution time.
 /// </summary>
 public abstract class BaseEndpointGroup
 {

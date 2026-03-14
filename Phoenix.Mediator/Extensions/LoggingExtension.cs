@@ -22,6 +22,8 @@ public static class LoggingExtensions
         if (hasSentry)
         {
             var sentryDsn = builder.Configuration["Sentry:Dsn"];
+            var sendDefaultPii = bool.TryParse(builder.Configuration["Sentry:SendDefaultPii"], out var configuredSendDefaultPii)
+                && configuredSendDefaultPii;
             builder.WebHost.UseSentry(o =>
             {
                 o.Dsn = sentryDsn;
@@ -29,7 +31,7 @@ public static class LoggingExtensions
                 o.Environment = builder.Environment.EnvironmentName;
                 o.Debug = false;
                 o.AttachStacktrace = true;
-                o.SendDefaultPii = true;
+                o.SendDefaultPii = sendDefaultPii;
             });
             Serilog.Debugging.SelfLog.Enable(Console.Error);
             builder.Host.UseSerilog((context, loggerConfig) =>
@@ -79,7 +81,7 @@ public static class LoggingExtensions
                         o.Dsn = sentryDsn;
                         o.MinimumBreadcrumbLevel = LogEventLevel.Information;
                         o.MinimumEventLevel = LogEventLevel.Error;
-                        o.SendDefaultPii = true;
+                        o.SendDefaultPii = sendDefaultPii;
                         o.AttachStacktrace = true;
                         o.Environment = env.EnvironmentName;
                         o.Release = Assembly.GetExecutingAssembly().GetName().Version?.ToString();
@@ -142,18 +144,8 @@ public static class LoggingExtensions
 
     private static string? GetClientIp(HttpContext ctx)
     {
-        // Prefer X-Forwarded-For if present (first IP in the list).
-        if (ctx.Request.Headers.TryGetValue("X-Forwarded-For", out var xff) && xff.Count > 0)
-        {
-            var raw = xff.ToString();
-            if (!string.IsNullOrWhiteSpace(raw))
-            {
-                var first = raw.Split(',')[0].Trim();
-                if (!string.IsNullOrWhiteSpace(first))
-                    return first;
-            }
-        }
-
+        // Use the connection address. If the host runs behind a trusted proxy,
+        // ASP.NET Core's forwarded headers middleware should update this value.
         return ctx.Connection.RemoteIpAddress?.ToString();
     }
 }

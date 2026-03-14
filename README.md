@@ -88,6 +88,12 @@ app.MapEndpoints(); // also maps /health
 app.Run();
 ```
 
+If your endpoint groups live in a separate class library, pass those assemblies explicitly:
+
+```csharp
+app.MapEndpoints(typeof(GreetingEndpoints).Assembly);
+```
+
 ## Sending requests
 
 ```csharp
@@ -143,5 +149,7 @@ builder.AddLogging(hasSentry: true);
 var app = builder.Build();
 app.UsePhoenixRequestLogEnrichment();
 ```
+
+Sentry PII remains disabled unless you explicitly set `Sentry:SendDefaultPii=true`.
 
 

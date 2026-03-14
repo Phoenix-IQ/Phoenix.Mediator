@@ -1,6 +1,6 @@
 <Solution>
   <Project Path="Phoenix.Mediator/Phoenix.Mediator.csproj" />
-  <Project Path="TestApi/TestApi.csproj" />
+  <Project Path="Phoenix.Mediator.Tests/Phoenix.Mediator.Tests.csproj" />
 </Solution>
 
 
