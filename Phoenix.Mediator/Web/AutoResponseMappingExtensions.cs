@@ -45,13 +45,17 @@ public static class AutoResponseMappingExtensions
                 statusCode: (int)ex.HttpStatusCode
             );
         }
+        catch (BadHttpRequestException)
+        {
+            throw;
+        }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "An unhandled exception occurred");
+            Log.Error(ex, "An unhandled exception occurred while processing {RequestType}", request.GetType().Name);
             return Results.Json(
                 new ErrorsResponse(["Unknown error occurred"]),
                 statusCode: StatusCodes.Status500InternalServerError
@@ -77,13 +81,17 @@ public static class AutoResponseMappingExtensions
                 statusCode: (int)ex.HttpStatusCode
             );
         }
+        catch (BadHttpRequestException)
+        {
+            throw;
+        }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "An unhandled exception occurred");
+            Log.Error(ex, "An unhandled exception occurred while processing {RequestType}", typeof(TRequest).Name);
             return Results.Json(
                 new ErrorsResponse(["Unknown error occurred"]),
                 statusCode: StatusCodes.Status500InternalServerError
@@ -109,13 +117,17 @@ public static class AutoResponseMappingExtensions
                 statusCode: (int)ex.HttpStatusCode
             );
         }
+        catch (BadHttpRequestException)
+        {
+            throw;
+        }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "An unhandled exception occurred");
+            Log.Error(ex, "An unhandled exception occurred while processing {RequestType}", typeof(TRequest).Name);
             return Results.Json(
                 new ErrorsResponse(["Unknown error occurred"]),
                 statusCode: StatusCodes.Status500InternalServerError
