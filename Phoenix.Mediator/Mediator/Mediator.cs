@@ -1,10 +1,7 @@
+using System.Collections.Concurrent;
 using System.Reflection;
-using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Phoenix.Mediator.Abstractions;
-using Phoenix.Mediator.Exceptions;
-using Phoenix.Mediator.Wrappers;
-using Serilog;
 
 namespace Phoenix.Mediator.Mediator;
 
@@ -18,77 +15,58 @@ public sealed class Mediator(IServiceProvider serviceProvider) : ISender
         typeof(Mediator).GetMethod(nameof(SendVoidBoxed), BindingFlags.Instance | BindingFlags.NonPublic)
         ?? throw new InvalidOperationException("Missing SendVoidBoxed method.");
 
+    private static readonly ConcurrentDictionary<Type, MethodInfo> MethodCache = new();
+
     public async Task<object?> Send(object request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
 
         var requestType = request.GetType();
-        var genericIRequest = requestType
-            .GetInterfaces()
-            .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IRequest<>));
 
-        if (genericIRequest is not null)
+        var mi = MethodCache.GetOrAdd(requestType, static type =>
         {
-            var responseType = genericIRequest.GetGenericArguments()[0];
-            var mi = SendBoxedMethod.MakeGenericMethod(requestType, responseType);
-            return await ((Task<object?>)mi.Invoke(this, new object[] { request, cancellationToken })!).ConfigureAwait(false);
-        }
+            var genericIRequest = type
+                .GetInterfaces()
+                .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IRequest<>));
 
-        if (request is IRequest)
-        {
-            var mi = SendVoidBoxedMethod.MakeGenericMethod(requestType);
-            return await ((Task<object?>)mi.Invoke(this, new object[] { request, cancellationToken })!).ConfigureAwait(false);
-        }
+            if (genericIRequest is not null)
+            {
+                var responseType = genericIRequest.GetGenericArguments()[0];
+                return SendBoxedMethod.MakeGenericMethod(type, responseType);
+            }
 
-        throw new ArgumentException($"Request type '{requestType.FullName}' must implement IRequest or IRequest<TResponse>.", nameof(request));
+            if (typeof(IRequest).IsAssignableFrom(type))
+            {
+                return SendVoidBoxedMethod.MakeGenericMethod(type);
+            }
+
+            throw new ArgumentException($"Request type '{type.FullName}' must implement IRequest or IRequest<TResponse>.");
+        });
+
+        return await ((Task<object?>)mi.Invoke(this, [request, cancellationToken])!).ConfigureAwait(false);
+    }
+
+    public Task<TResponse> Send<TRequest, TResponse>(TRequest request, CancellationToken cancellationToken = default)
+        where TRequest : IRequest<TResponse>
+    {
+        return SendInternal<TRequest, TResponse>(request, cancellationToken);
+    }
+
+    public Task Send<TRequest>(TRequest request, CancellationToken cancellationToken = default)
+        where TRequest : IRequest
+    {
+        return SendInternalVoid(request, cancellationToken);
     }
 
     private async Task<object?> SendBoxed<TRequest, TResponse>(TRequest request, CancellationToken cancellationToken) where TRequest : IRequest<TResponse>
     {
-        try
-        {
-            var response = await SendInternal<TRequest, TResponse>(request, cancellationToken).ConfigureAwait(false);
-            return response;
-        }
-        catch (HttpResponseException httpResponseException)
-        {
-            return Results.Json(
-                new ErrorsResponse(httpResponseException.Errors),
-                statusCode: (int)httpResponseException.HttpStatusCode
-            );
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "exception {ex}", ex);
-            return Results.Json(
-                new ErrorsResponse(["Unknown error occurred"]),
-                statusCode: StatusCodes.Status500InternalServerError
-            );
-        }
+        return await SendInternal<TRequest, TResponse>(request, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<object?> SendVoidBoxed<TRequest>(TRequest request, CancellationToken cancellationToken) where TRequest : IRequest
     {
-        try
-        {
-            await SendInternalVoid(request, cancellationToken).ConfigureAwait(false);
-            return Results.NoContent();
-        }
-        catch (HttpResponseException httpResponseException)
-        {
-            return Results.Json(
-                new ErrorsResponse(httpResponseException.Errors),
-                statusCode: (int)httpResponseException.HttpStatusCode
-            );
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "exception {ex}", ex);
-            return Results.Json(
-                new ErrorsResponse(["Unknown error occurred"]),
-                statusCode: StatusCodes.Status500InternalServerError
-            );
-        }
+        await SendInternalVoid(request, cancellationToken).ConfigureAwait(false);
+        return null;
     }
 
     private async Task<TResponse> SendInternal<TRequest, TResponse>(TRequest request, CancellationToken cancellationToken)

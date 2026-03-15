@@ -19,47 +19,44 @@ public static class LoggingExtensions
     /// </summary>
     public static void AddLogging(this WebApplicationBuilder builder, bool hasSentry = true)
     {
+        string? sentryDsn = null;
+        var sendDefaultPii = false;
+        var tracesSampleRate = 0.1;
+
         if (hasSentry)
         {
-            var sentryDsn = builder.Configuration["Sentry:Dsn"];
-            var sendDefaultPii = bool.TryParse(builder.Configuration["Sentry:SendDefaultPii"], out var configuredSendDefaultPii)
+            sentryDsn = builder.Configuration["Sentry:Dsn"];
+            sendDefaultPii = bool.TryParse(builder.Configuration["Sentry:SendDefaultPii"], out var configuredSendDefaultPii)
                 && configuredSendDefaultPii;
+            tracesSampleRate = double.TryParse(builder.Configuration["Sentry:TracesSampleRate"], out var configuredRate)
+                ? Math.Clamp(configuredRate, 0.0, 1.0)
+                : 0.1;
             builder.WebHost.UseSentry(o =>
             {
                 o.Dsn = sentryDsn;
-                o.TracesSampleRate = 1.0;
+                o.TracesSampleRate = tracesSampleRate;
                 o.Environment = builder.Environment.EnvironmentName;
                 o.Debug = false;
                 o.AttachStacktrace = true;
                 o.SendDefaultPii = sendDefaultPii;
             });
-            Serilog.Debugging.SelfLog.Enable(Console.Error);
-            builder.Host.UseSerilog((context, loggerConfig) =>
-            {
-                var env = context.HostingEnvironment;
-                var logsDir = Path.Combine(env.ContentRootPath, "logs");
-                Directory.CreateDirectory(logsDir);
+        }
 
-                var logFilePath = Path.Combine(logsDir, "log-.log");
+        Serilog.Debugging.SelfLog.Enable(Console.Error);
+        builder.Host.UseSerilog((context, loggerConfig) =>
+        {
+            var env = context.HostingEnvironment;
+            var logsDir = Path.Combine(env.ContentRootPath, "logs");
+            Directory.CreateDirectory(logsDir);
+
+            ConfigureBaseSerilog(loggerConfig, logsDir);
+
+            if (hasSentry)
+            {
                 var warningsFilePath = Path.Combine(logsDir, "exceptions-.log");
                 var exceptionsJsonPath = Path.Combine(logsDir, "exceptions-json-.log");
 
                 loggerConfig
-                    .MinimumLevel.Information()
-                    .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
-                    .Enrich.FromLogContext()
-                    .Enrich.WithExceptionDetails()
-                    .Enrich.WithMachineName()
-                    .WriteTo.Console(
-                        outputTemplate:
-                        "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext} {Message:lj} " +
-                        "(ClientIP={ClientIP} TraceId={TraceId}){NewLine}{Exception}")
-                    .WriteTo.File(
-                        path: logFilePath,
-                        rollingInterval: RollingInterval.Day,
-                        retainedFileCountLimit: 14,
-                        fileSizeLimitBytes: 50_000_000,
-                        shared: true)
                     .WriteTo.File(
                         path: warningsFilePath,
                         rollingInterval: RollingInterval.Day,
@@ -86,37 +83,32 @@ public static class LoggingExtensions
                         o.Environment = env.EnvironmentName;
                         o.Release = Assembly.GetExecutingAssembly().GetName().Version?.ToString();
                         o.MaxBreadcrumbs = 100;
-                        o.TracesSampleRate = 1.0;
+                        o.TracesSampleRate = tracesSampleRate;
                     });
-            });
-        }
-        else
-        {
-            Serilog.Debugging.SelfLog.Enable(Console.Error);
-            builder.Host.UseSerilog((context, loggerConfig) =>
-            {
-                var env = context.HostingEnvironment;
-                var logsDir = Path.Combine(env.ContentRootPath, "logs");
-                Directory.CreateDirectory(logsDir);
-                var logFilePath = Path.Combine(logsDir, "log-.log");
-                loggerConfig
-                    .MinimumLevel.Information()
-                    .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
-                    .Enrich.FromLogContext()
-                    .Enrich.WithExceptionDetails()
-                    .Enrich.WithMachineName()
-                    .WriteTo.Console(
-                        outputTemplate:
-                        "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext} {Message:lj} " +
-                        "(ClientIP={ClientIP} TraceId={TraceId}){NewLine}{Exception}")
-                    .WriteTo.File(
-                        path: logFilePath,
-                        rollingInterval: RollingInterval.Day,
-                        retainedFileCountLimit: 14,
-                        fileSizeLimitBytes: 50_000_000,
-                        shared: true);
-            });
-        }
+            }
+        });
+    }
+
+    private static void ConfigureBaseSerilog(LoggerConfiguration loggerConfig, string logsDir)
+    {
+        var logFilePath = Path.Combine(logsDir, "log-.log");
+
+        loggerConfig
+            .MinimumLevel.Information()
+            .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
+            .Enrich.FromLogContext()
+            .Enrich.WithExceptionDetails()
+            .Enrich.WithMachineName()
+            .WriteTo.Console(
+                outputTemplate:
+                "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext} {Message:lj} " +
+                "(ClientIP={ClientIP} TraceId={TraceId}){NewLine}{Exception}")
+            .WriteTo.File(
+                path: logFilePath,
+                rollingInterval: RollingInterval.Day,
+                retainedFileCountLimit: 14,
+                fileSizeLimitBytes: 50_000_000,
+                shared: true);
     }
 
     /// <summary>

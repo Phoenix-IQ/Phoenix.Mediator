@@ -82,7 +82,7 @@ public static class ServiceCollectionExtensions
                     var def = it.GetGenericTypeDefinition();
                     if (def == typeof(IRequestHandler<,>) || def == typeof(IRequestHandler<>))
                     {
-                        services.AddTransient(it, type.AsType());
+                        services.TryAddTransient(it, type.AsType());
                     }
                 }
             }

@@ -1,5 +1,8 @@
 using Microsoft.AspNetCore.Http;
+using Phoenix.Mediator.Abstractions;
+using Phoenix.Mediator.Exceptions;
 using Phoenix.Mediator.Wrappers;
+using Serilog;
 
 namespace Phoenix.Mediator.Web;
 
@@ -22,6 +25,102 @@ public static class AutoResponseMappingExtensions
             // Always return JSON so Swagger/clients consistently get the documented content-type/schema.
             _ => Results.Json(value)
         };
+    }
+
+    /// <summary>
+    /// Sends a request through the mediator and maps the result (or exception) to an <see cref="IResult"/>.
+    /// Use this in HTTP endpoint handlers instead of calling <c>sender.Send()</c> + <c>ToApiResult()</c> manually.
+    /// </summary>
+    public static async Task<IResult> SendAsApiResult(this ISender sender, object request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var result = await sender.Send(request, cancellationToken).ConfigureAwait(false);
+            return result.ToApiResult();
+        }
+        catch (HttpResponseException ex)
+        {
+            return Results.Json(
+                new ErrorsResponse(ex.Errors),
+                statusCode: (int)ex.HttpStatusCode
+            );
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "An unhandled exception occurred");
+            return Results.Json(
+                new ErrorsResponse(["Unknown error occurred"]),
+                statusCode: StatusCodes.Status500InternalServerError
+            );
+        }
+    }
+
+    /// <summary>
+    /// Strongly-typed overload — no reflection, no boxing.
+    /// </summary>
+    public static async Task<IResult> SendAsApiResult<TRequest, TResponse>(this ISender sender, TRequest request, CancellationToken cancellationToken = default)
+        where TRequest : IRequest<TResponse>
+    {
+        try
+        {
+            var result = await sender.Send<TRequest, TResponse>(request, cancellationToken).ConfigureAwait(false);
+            return result.ToApiResult();
+        }
+        catch (HttpResponseException ex)
+        {
+            return Results.Json(
+                new ErrorsResponse(ex.Errors),
+                statusCode: (int)ex.HttpStatusCode
+            );
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "An unhandled exception occurred");
+            return Results.Json(
+                new ErrorsResponse(["Unknown error occurred"]),
+                statusCode: StatusCodes.Status500InternalServerError
+            );
+        }
+    }
+
+    /// <summary>
+    /// Strongly-typed overload for void requests — no reflection, no boxing.
+    /// </summary>
+    public static async Task<IResult> SendAsApiResult<TRequest>(this ISender sender, TRequest request, CancellationToken cancellationToken = default)
+        where TRequest : IRequest
+    {
+        try
+        {
+            await sender.Send(request, cancellationToken).ConfigureAwait(false);
+            return Results.NoContent();
+        }
+        catch (HttpResponseException ex)
+        {
+            return Results.Json(
+                new ErrorsResponse(ex.Errors),
+                statusCode: (int)ex.HttpStatusCode
+            );
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "An unhandled exception occurred");
+            return Results.Json(
+                new ErrorsResponse(["Unknown error occurred"]),
+                statusCode: StatusCodes.Status500InternalServerError
+            );
+        }
     }
 }
 
