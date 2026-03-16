@@ -1,8 +1,6 @@
 using Microsoft.AspNetCore.Http;
 using Phoenix.Mediator.Abstractions;
-using Phoenix.Mediator.Exceptions;
 using Phoenix.Mediator.Wrappers;
-using Serilog;
 
 namespace Phoenix.Mediator.Web;
 
@@ -33,107 +31,25 @@ public static class AutoResponseMappingExtensions
     /// </summary>
     public static async Task<IResult> SendAsApiResult(this ISender sender, object request, CancellationToken cancellationToken = default)
     {
-        try
-        {
-            var result = await sender.Send(request, cancellationToken).ConfigureAwait(false);
-            return result.ToApiResult();
-        }
-        catch (HttpResponseException ex)
-        {
-            return Results.Json(
-                new ErrorsResponse(ex.Errors),
-                statusCode: (int)ex.HttpStatusCode
-            );
-        }
-        catch (BadHttpRequestException)
-        {
-            throw;
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "An unhandled exception occurred while processing {RequestType}", request.GetType().Name);
-            return Results.Json(
-                new ErrorsResponse(["Unknown error occurred"]),
-                statusCode: StatusCodes.Status500InternalServerError
-            );
-        }
+        var result = await sender.Send(request, cancellationToken).ConfigureAwait(false);
+        return result.ToApiResult();
     }
 
     /// <summary>
     /// Strongly-typed overload — no reflection, no boxing.
     /// </summary>
-    public static async Task<IResult> SendAsApiResult<TRequest, TResponse>(this ISender sender, TRequest request, CancellationToken cancellationToken = default)
-        where TRequest : IRequest<TResponse>
+    public static async Task<IResult> SendAsApiResult<TRequest, TResponse>(this ISender sender, TRequest request, CancellationToken cancellationToken = default) where TRequest : IRequest<TResponse>
     {
-        try
-        {
-            var result = await sender.Send<TRequest, TResponse>(request, cancellationToken).ConfigureAwait(false);
-            return result.ToApiResult();
-        }
-        catch (HttpResponseException ex)
-        {
-            return Results.Json(
-                new ErrorsResponse(ex.Errors),
-                statusCode: (int)ex.HttpStatusCode
-            );
-        }
-        catch (BadHttpRequestException)
-        {
-            throw;
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "An unhandled exception occurred while processing {RequestType}", typeof(TRequest).Name);
-            return Results.Json(
-                new ErrorsResponse(["Unknown error occurred"]),
-                statusCode: StatusCodes.Status500InternalServerError
-            );
-        }
+        var result = await sender.Send<TRequest, TResponse>(request, cancellationToken).ConfigureAwait(false);
+        return result.ToApiResult();
     }
 
     /// <summary>
     /// Strongly-typed overload for void requests — no reflection, no boxing.
     /// </summary>
-    public static async Task<IResult> SendAsApiResult<TRequest>(this ISender sender, TRequest request, CancellationToken cancellationToken = default)
-        where TRequest : IRequest
+    public static async Task<IResult> SendAsApiResult<TRequest>(this ISender sender, TRequest request, CancellationToken cancellationToken = default) where TRequest : IRequest
     {
-        try
-        {
-            await sender.Send(request, cancellationToken).ConfigureAwait(false);
-            return Results.NoContent();
-        }
-        catch (HttpResponseException ex)
-        {
-            return Results.Json(
-                new ErrorsResponse(ex.Errors),
-                statusCode: (int)ex.HttpStatusCode
-            );
-        }
-        catch (BadHttpRequestException)
-        {
-            throw;
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "An unhandled exception occurred while processing {RequestType}", typeof(TRequest).Name);
-            return Results.Json(
-                new ErrorsResponse(["Unknown error occurred"]),
-                statusCode: StatusCodes.Status500InternalServerError
-            );
-        }
+        await sender.Send(request, cancellationToken).ConfigureAwait(false);
+        return Results.NoContent();
     }
 }
-
-

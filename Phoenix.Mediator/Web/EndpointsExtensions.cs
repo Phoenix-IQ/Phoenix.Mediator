@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Phoenix.Mediator.Abstractions;
 using Phoenix.Mediator.Mediator;
 using Phoenix.Mediator.Web.Dtos;
+using Phoenix.Mediator.Web.Middlewares;
 using Phoenix.Mediator.Wrappers;
 using System.Reflection;
 using System.Text.Json;
@@ -20,7 +21,7 @@ public static class EndpointsExtensions
     {
         ArgumentNullException.ThrowIfNull(app);
         ArgumentNullException.ThrowIfNull(assemblies);
-
+        app.UseMiddleware<ExceptionHandlingMiddleware>();
         app.MapHealthChecks("/health", new HealthCheckOptions
         {
             ResponseWriter = async (context, report) =>
