@@ -1,7 +1,6 @@
 ﻿using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Phoenix.Mediator.Exceptions;
-using Phoenix.Mediator.Wrappers;
 using System.Net;
 using System.Text.Json;
 
@@ -19,9 +18,9 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next,ILogger<Exc
         {
             await HandleHttpResponseException(context, ex);
         }
-        catch (UnauthorizedAccessException ex)
+        catch (UnauthorizedAccessException)
         {
-            await HandleUnauthorizedException(context, ex);
+            await HandleUnauthorizedException(context);
         }
         catch (Exception ex)
         {
@@ -31,7 +30,7 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next,ILogger<Exc
 
     private async Task HandleHttpResponseException(HttpContext context,HttpResponseException exception)
     {
-        var response = exception.ErrorResponse;
+        context.Response.Clear();
 
         logger.LogWarning(exception,
             "HttpResponseException occurred for {Method} {Path}",
@@ -39,32 +38,28 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next,ILogger<Exc
             context.Request.Path);
 
         context.Response.ContentType = "application/json";
-        context.Response.StatusCode = (int)response.HttpStatusCode;
+        context.Response.StatusCode = (int)exception.HttpStatusCode;
 
-        var json = JsonSerializer.Serialize(response);
+        var json = JsonSerializer.Serialize(new
+        {
+            errors = exception.Errors
+        });
 
         await context.Response.WriteAsync(json);
     }
 
-    private async Task HandleUnauthorizedException(HttpContext context,UnauthorizedAccessException exception)
+    private static Task HandleUnauthorizedException(HttpContext context)
     {
-        var response = new ErrorResponse(HttpStatusCode.Unauthorized,["Unauthorized"]);
-
-        logger.LogWarning(exception,
-            "Unauthorized request {Method} {Path}",
-            context.Request.Method,
-            context.Request.Path);
-
-        context.Response.ContentType = "application/json";
+        context.Response.Clear();
         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
 
-        var json = JsonSerializer.Serialize(response);
-
-        await context.Response.WriteAsync(json);
+        return Task.CompletedTask;
     }
 
     private async Task HandleUnhandledException(HttpContext context,Exception exception)
     {
+        context.Response.Clear();
+
         var statusCode = exception switch
         {
             KeyNotFoundException => HttpStatusCode.NotFound,
@@ -72,17 +67,18 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next,ILogger<Exc
             _ => HttpStatusCode.InternalServerError
         };
 
-        var response = new ErrorResponse(
-            statusCode,
-            ["Unknown error occurred"]
-        );
-
-        logger.LogError(exception,"Unhandled exception for {Method} {Path}",context.Request.Method,context.Request.Path);
+        logger.LogError(exception,
+            "Unhandled exception for {Method} {Path}",
+            context.Request.Method,
+            context.Request.Path);
 
         context.Response.ContentType = "application/json";
         context.Response.StatusCode = (int)statusCode;
 
-        var json = JsonSerializer.Serialize(response);
+        var json = JsonSerializer.Serialize(new
+        {
+            errors = new[] { "Unknown error occurred" }
+        });
 
         await context.Response.WriteAsync(json);
     }

@@ -15,7 +15,7 @@ public class HttpResponseException : Exception
     {
         ErrorResponse = errorResponse;
     }
-
+    
     public ErrorResponse ErrorResponse { get; }
     public HttpStatusCode HttpStatusCode => ErrorResponse.HttpStatusCode;
     public IReadOnlyList<string> Errors => ErrorResponse.Errors;
