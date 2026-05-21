@@ -1,11 +1,12 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Phoenix.Mediator.Abstractions;
 
 namespace Phoenix.Mediator.Mediator;
 
-public sealed class Mediator(IServiceProvider serviceProvider) : ISender
+public sealed class Mediator(IServiceProvider serviceProvider, IOptions<MediatorOptions> options) : ISender, IMediatorOptionsAccessor
 {
     private static readonly MethodInfo SendBoxedMethod =
         typeof(Mediator).GetMethod(nameof(SendBoxed), BindingFlags.Instance | BindingFlags.NonPublic)
@@ -16,6 +17,8 @@ public sealed class Mediator(IServiceProvider serviceProvider) : ISender
         ?? throw new InvalidOperationException("Missing SendVoidBoxed method.");
 
     private static readonly ConcurrentDictionary<Type, MethodInfo> MethodCache = new();
+
+    public MediatorOptions Options => options.Value;
 
     public async Task<object?> Send(object request, CancellationToken cancellationToken = default)
     {

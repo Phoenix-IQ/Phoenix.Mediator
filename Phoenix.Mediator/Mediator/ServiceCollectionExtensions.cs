@@ -10,7 +10,27 @@ public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddMediator(this IServiceCollection services)
     {
+        return AddMediatorCore(services, configureOptions: null);
+    }
+
+    public static IServiceCollection AddMediator(this IServiceCollection services, Action<MediatorOptions> configureOptions)
+    {
+        ArgumentNullException.ThrowIfNull(configureOptions);
+
+        return AddMediatorCore(services, configureOptions);
+    }
+
+    private static IServiceCollection AddMediatorCore(IServiceCollection services, Action<MediatorOptions>? configureOptions)
+    {
         ArgumentNullException.ThrowIfNull(services);
+
+        services.AddOptions<MediatorOptions>()
+            .Validate(
+                options => options.EmptyResponseStatusCode is EmptyResponseStatusCode.Ok or EmptyResponseStatusCode.NoContent,
+                "Empty response status code must be 200 OK or 204 No Content.");
+
+        if (configureOptions is not null)
+            services.Configure(configureOptions);
 
         services.AddHealthChecks();
         services.GetOrCreateAssemblyRegistry();
@@ -37,10 +57,22 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddMediator(this IServiceCollection services, params Assembly[] assemblies)
     {
+        return AddMediatorWithAssemblies(services, configureOptions: null, assemblies);
+    }
+
+    public static IServiceCollection AddMediator(this IServiceCollection services, Action<MediatorOptions> configureOptions, params Assembly[] assemblies)
+    {
+        ArgumentNullException.ThrowIfNull(configureOptions);
+
+        return AddMediatorWithAssemblies(services, configureOptions, assemblies);
+    }
+
+    private static IServiceCollection AddMediatorWithAssemblies(IServiceCollection services, Action<MediatorOptions>? configureOptions, params Assembly[] assemblies)
+    {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(assemblies);
 
-        AddMediator(services);
+        AddMediatorCore(services, configureOptions);
 
         if (assemblies.Length > 0)
         {

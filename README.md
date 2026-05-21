@@ -34,6 +34,15 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddMediator(Assembly.GetExecutingAssembly());
 ```
 
+Empty `IRequest` responses default to `204 No Content`. Configure `200 OK` during registration when that better matches your API contract:
+
+```csharp
+builder.Services.AddMediator(options =>
+{
+    options.EmptyResponseStatusCode = EmptyResponseStatusCode.Ok;
+}, Assembly.GetExecutingAssembly());
+```
+
 `AddMediator(assemblies...)` registers:
 - `ISender` (scoped)
 - built-in pipeline behaviors (Sentry + FluentValidation)
@@ -108,9 +117,21 @@ IResult apiResult = result.ToApiResult();
 ## Response and error behavior
 
 - `IRequest<TResponse>`: returns JSON body (`200 OK`) on success
-- `IRequest` (no response): returns `204 No Content` on success
+- `IRequest` (no response): returns configured empty response status on success (`204 No Content` by default, or `200 OK`)
 - `HttpResponseException` (or derived exceptions): returns `{"errors":[...]}` with mapped status code
-- Unhandled exceptions: returns `500` with `{"errors":["Unknown error occurred"]}`
+- Unhandled exceptions: returns `500` with the configured unknown-error message
+
+Unknown-error messages can be configured per consuming project in JSON. The middleware matches `Accept-Language` case-insensitively, including `ar`, `Arabic`, `en`, and `English`; if the header is missing, it uses `Default`/`DefaultLanguage`, then English.
+
+```json
+{
+  "ErrorMessages": {
+    "Default": "En",
+    "Ar": "حصل خطأ غير معرف",
+    "En": "Unknown error occurred"
+  }
+}
+```
 
 Built-in exception types:
 - `BadRequestException`
@@ -132,7 +153,7 @@ Error body shape:
 
 These helpers:
 - Add default OpenAPI responses (`401`, `403`, `400`, `500`)
-- Infer success response metadata from request type (`IRequest<T>` => `200`, `IRequest` => `204`)
+- Infer success response metadata from request type (`IRequest<T>` => `200`, `IRequest` => configured empty response status)
 - Allow explicit response metadata via `ResponseDto`
 
 ## Validation

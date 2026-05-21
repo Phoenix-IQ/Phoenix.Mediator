@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Phoenix.Mediator.Abstractions;
 using Phoenix.Mediator.Mediator;
 using Phoenix.Mediator.Web.Dtos;
@@ -110,7 +111,7 @@ public static class EndpointsExtensions
         }
     }
 
-    private static RouteHandlerBuilder AddResponses(this RouteHandlerBuilder handler, Delegate endpointHandler, ResponseDto[]? responses)
+    private static RouteHandlerBuilder AddResponses(this RouteHandlerBuilder handler, IServiceProvider services, Delegate endpointHandler, ResponseDto[]? responses)
     {
         handler.Produces(statusCode: 401);
         handler.Produces(statusCode: 403);
@@ -122,7 +123,7 @@ public static class EndpointsExtensions
         // - Otherwise infer from the IRequest/IRequest<TResponse> parameter on the delegate.
         var successResponses = (responses is { Length: > 0 })
             ? responses
-            : InferSuccessResponses(endpointHandler);
+            : InferSuccessResponses(endpointHandler, GetConfiguredEmptyResponseStatusCode(services));
 
         if (successResponses is { Length: > 0 })
         {
@@ -154,13 +155,13 @@ public static class EndpointsExtensions
         return handler;
     }
 
-    private static ResponseDto[]? InferSuccessResponses(Delegate endpointHandler)
+    private static ResponseDto[]? InferSuccessResponses(Delegate endpointHandler, EmptyResponseStatusCode emptyResponseStatusCode)
     {
         // Typical minimal-API pattern:
         // (ISender sender, TRequest request, CancellationToken ct) => await sender.Send(request, ct)
         // We infer OpenAPI success responses based on the request type:
         // - IRequest<TResponse> => 200 with schema = TResponse
-        // - IRequest (no response) => 204 only
+        // - IRequest (no response) => configured empty response status code
         var requestType = endpointHandler.Method
             .GetParameters()
             .Select(p => p.ParameterType)
@@ -182,10 +183,16 @@ public static class EndpointsExtensions
 
         if (typeof(IRequest).IsAssignableFrom(requestType))
         {
-            return [new ResponseDto(204, null)];
+            return [new ResponseDto((int)emptyResponseStatusCode, null)];
         }
 
         return null;
+    }
+
+    private static EmptyResponseStatusCode GetConfiguredEmptyResponseStatusCode(IServiceProvider services)
+    {
+        return services.GetService<IOptions<MediatorOptions>>()?.Value.EmptyResponseStatusCode
+            ?? EmptyResponseStatusCode.NoContent;
     }
 
     private static bool IsMediatorRequestType(Type t)
@@ -206,7 +213,7 @@ public static class EndpointsExtensions
     public static IEndpointRouteBuilder Get(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
     {
         builder.MapGet(pattern, handler)
-            .AddResponses(handler, responseDtos);
+            .AddResponses(builder.ServiceProvider, handler, responseDtos);
         return builder;
     }
 
@@ -216,7 +223,7 @@ public static class EndpointsExtensions
     public static IEndpointRouteBuilder Post(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
     {
         builder.MapPost(pattern, handler)
-            .AddResponses(handler, responseDtos);
+            .AddResponses(builder.ServiceProvider, handler, responseDtos);
         return builder;
     }
 
@@ -226,7 +233,7 @@ public static class EndpointsExtensions
     public static IEndpointRouteBuilder Put(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
     {
         builder.MapPut(pattern, handler)
-            .AddResponses(handler, responseDtos);
+            .AddResponses(builder.ServiceProvider, handler, responseDtos);
         return builder;
     }
 
@@ -236,7 +243,7 @@ public static class EndpointsExtensions
     public static IEndpointRouteBuilder Delete(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
     {
         builder.MapDelete(pattern, handler)
-            .AddResponses(handler, responseDtos);
+            .AddResponses(builder.ServiceProvider, handler, responseDtos);
         return builder;
     }
 
@@ -246,7 +253,7 @@ public static class EndpointsExtensions
     public static IEndpointRouteBuilder Patch(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
     {
         builder.MapPatch(pattern, handler)
-            .AddResponses(handler, responseDtos);
+            .AddResponses(builder.ServiceProvider, handler, responseDtos);
         return builder;
     }
     // --------------------
@@ -256,7 +263,7 @@ public static class EndpointsExtensions
     {
         builder.MapPost(pattern, handler)
             .DisableAntiforgery()
-            .AddResponses(handler, responseDtos)
+            .AddResponses(builder.ServiceProvider, handler, responseDtos)
             .Accepts<IFormFile>("multipart/form-data")
             .Accepts<IFormFileCollection>("multipart/form-data")
             .WithMetadata(new RequestSizeLimitAttribute(maxRequestBodySize))
@@ -271,7 +278,7 @@ public static class EndpointsExtensions
     {
         builder.MapPut(pattern, handler)
             .DisableAntiforgery()
-            .AddResponses(handler, responseDtos)
+            .AddResponses(builder.ServiceProvider, handler, responseDtos)
             .Accepts<IFormFile>("multipart/form-data")
             .Accepts<IFormFileCollection>("multipart/form-data")
             .WithMetadata(new RequestSizeLimitAttribute(maxRequestBodySize))
@@ -283,7 +290,7 @@ public static class EndpointsExtensions
     {
         builder.MapPatch(pattern, handler)
             .DisableAntiforgery()
-            .AddResponses(handler, responseDtos)
+            .AddResponses(builder.ServiceProvider, handler, responseDtos)
             .Accepts<IFormFile>("multipart/form-data")
             .Accepts<IFormFileCollection>("multipart/form-data")
             .WithMetadata(new RequestSizeLimitAttribute(maxRequestBodySize))
