@@ -1,5 +1,9 @@
 <Solution>
   <Project Path="Phoenix.Mediator/Phoenix.Mediator.csproj" />
+  <Project Path="Phoenix.Mediator.Validation/Phoenix.Mediator.Validation.csproj" />
+  <Project Path="Phoenix.Mediator.Sentry/Phoenix.Mediator.Sentry.csproj" />
+  <Project Path="Phoenix.Mediator.Serilog/Phoenix.Mediator.Serilog.csproj" />
+  <Project Path="Phoenix.Mediator.Serilog.Sentry/Phoenix.Mediator.Serilog.Sentry.csproj" />
   <Project Path="Phoenix.Mediator.Tests/Phoenix.Mediator.Tests.csproj" />
 </Solution>
 

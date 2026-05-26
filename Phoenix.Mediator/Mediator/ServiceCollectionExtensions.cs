@@ -1,6 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using FluentValidation;
 using Phoenix.Mediator.Abstractions;
 using System.Reflection;
 
@@ -27,7 +26,7 @@ public static class ServiceCollectionExtensions
         services.AddOptions<MediatorOptions>()
             .Validate(
                 options => options.EmptyResponseStatusCode is EmptyResponseStatusCode.Ok or EmptyResponseStatusCode.NoContent,
-                "Empty response status code must be 200 OK or 204 No Content.");
+                MediatorMessages.InvalidEmptyResponseStatusCode);
 
         if (configureOptions is not null)
             services.Configure(configureOptions);
@@ -39,16 +38,10 @@ public static class ServiceCollectionExtensions
         services.TryAddScoped<Mediator>();
         services.TryAddScoped<ISender, Mediator>();
 
-        // Pipelines:
-        // - GetServices<T>() returns in registration order
-        // - Mediator wraps from the end, so:
-        //   - first registered runs OUTERMOST (first to execute)
-        //   - last registered runs INNERMOST (closest to the handler)
-        services.TryAddEnumerable(ServiceDescriptor.Transient(typeof(IPipelineBehavior<,>), typeof(SentryBehavior<,>)));
-        services.TryAddEnumerable(ServiceDescriptor.Transient(typeof(IPipelineBehavior<>), typeof(SentryBehavior<>)));
-        services.TryAddEnumerable(ServiceDescriptor.Transient(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>)));
-        services.TryAddEnumerable(ServiceDescriptor.Transient(typeof(IPipelineBehavior<>), typeof(ValidationBehavior<>)));
-
+        // Pipeline behaviors are opt-in via companion packages:
+        // - Phoenix.Mediator.Sentry      -> services.AddMediatorSentry()
+        // - Phoenix.Mediator.Validation  -> services.AddMediatorValidation(assemblies)
+        // Register them in the order you want them to run (first registered = OUTERMOST).
         return services;
     }
 
@@ -81,7 +74,6 @@ public static class ServiceCollectionExtensions
             if (newAssemblies.Length > 0)
             {
                 services.AddMediatorHandlers(newAssemblies);
-                services.AddMediatorValidators(newAssemblies);
             }
         }
 
@@ -118,25 +110,6 @@ public static class ServiceCollectionExtensions
                     }
                 }
             }
-        }
-
-        return services;
-    }
-
-    /// <summary>
-    /// Registers FluentValidation validators (IValidator&lt;T&gt;/AbstractValidator&lt;T&gt;) found in the provided assemblies.
-    /// </summary>
-    public static IServiceCollection AddMediatorValidators(this IServiceCollection services, params Assembly[] assemblies)
-    {
-        ArgumentNullException.ThrowIfNull(services);
-
-        if (assemblies is null || assemblies.Length == 0)
-            throw new ArgumentException("At least one assembly must be provided.", nameof(assemblies));
-
-        foreach (var assembly in assemblies.Distinct())
-        {
-            // Uses FluentValidation.DependencyInjectionExtensions
-            services.AddValidatorsFromAssembly(assembly);
         }
 
         return services;

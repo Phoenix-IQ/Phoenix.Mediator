@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Phoenix.Mediator.Abstractions;
@@ -8,15 +7,9 @@ namespace Phoenix.Mediator.Mediator;
 
 public sealed class Mediator(IServiceProvider serviceProvider, IOptions<MediatorOptions> options) : ISender, IMediatorOptionsAccessor
 {
-    private static readonly MethodInfo SendBoxedMethod =
-        typeof(Mediator).GetMethod(nameof(SendBoxed), BindingFlags.Instance | BindingFlags.NonPublic)
-        ?? throw new InvalidOperationException("Missing SendBoxed method.");
-
-    private static readonly MethodInfo SendVoidBoxedMethod =
-        typeof(Mediator).GetMethod(nameof(SendVoidBoxed), BindingFlags.Instance | BindingFlags.NonPublic)
-        ?? throw new InvalidOperationException("Missing SendVoidBoxed method.");
-
-    private static readonly ConcurrentDictionary<Type, MethodInfo> MethodCache = new();
+    // Per request-type wrapper objects. Built once per type, then dispatched via a virtual
+    // call — no per-request reflection (MethodInfo.Invoke), no object[] arg allocation.
+    private static readonly ConcurrentDictionary<Type, RequestHandlerWrapper> WrapperCache = new();
 
     public MediatorOptions Options => options.Value;
 
@@ -24,29 +17,9 @@ public sealed class Mediator(IServiceProvider serviceProvider, IOptions<Mediator
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var requestType = request.GetType();
+        var wrapper = WrapperCache.GetOrAdd(request.GetType(), static type => CreateWrapper(type));
 
-        var mi = MethodCache.GetOrAdd(requestType, static type =>
-        {
-            var genericIRequest = type
-                .GetInterfaces()
-                .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IRequest<>));
-
-            if (genericIRequest is not null)
-            {
-                var responseType = genericIRequest.GetGenericArguments()[0];
-                return SendBoxedMethod.MakeGenericMethod(type, responseType);
-            }
-
-            if (typeof(IRequest).IsAssignableFrom(type))
-            {
-                return SendVoidBoxedMethod.MakeGenericMethod(type);
-            }
-
-            throw new ArgumentException($"Request type '{type.FullName}' must implement IRequest or IRequest<TResponse>.");
-        });
-
-        return await ((Task<object?>)mi.Invoke(this, [request, cancellationToken])!).ConfigureAwait(false);
+        return await wrapper.Handle(this, request, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<TResponse> Send<TRequest, TResponse>(TRequest request, CancellationToken cancellationToken = default)
@@ -61,15 +34,26 @@ public sealed class Mediator(IServiceProvider serviceProvider, IOptions<Mediator
         return SendInternalVoid(request, cancellationToken);
     }
 
-    private async Task<object?> SendBoxed<TRequest, TResponse>(TRequest request, CancellationToken cancellationToken) where TRequest : IRequest<TResponse>
+    private static RequestHandlerWrapper CreateWrapper(Type requestType)
     {
-        return await SendInternal<TRequest, TResponse>(request, cancellationToken).ConfigureAwait(false);
-    }
+        var genericIRequest = requestType
+            .GetInterfaces()
+            .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IRequest<>));
 
-    private async Task<object?> SendVoidBoxed<TRequest>(TRequest request, CancellationToken cancellationToken) where TRequest : IRequest
-    {
-        await SendInternalVoid(request, cancellationToken).ConfigureAwait(false);
-        return null;
+        if (genericIRequest is not null)
+        {
+            var responseType = genericIRequest.GetGenericArguments()[0];
+            var wrapperType = typeof(RequestResponseWrapper<,>).MakeGenericType(requestType, responseType);
+            return (RequestHandlerWrapper)Activator.CreateInstance(wrapperType)!;
+        }
+
+        if (typeof(IRequest).IsAssignableFrom(requestType))
+        {
+            var wrapperType = typeof(VoidRequestWrapper<>).MakeGenericType(requestType);
+            return (RequestHandlerWrapper)Activator.CreateInstance(wrapperType)!;
+        }
+
+        throw new ArgumentException($"Request type '{requestType.FullName}' must implement IRequest or IRequest<TResponse>.");
     }
 
     private async Task<TResponse> SendInternal<TRequest, TResponse>(TRequest request, CancellationToken cancellationToken)
@@ -105,6 +89,30 @@ public sealed class Mediator(IServiceProvider serviceProvider, IOptions<Mediator
         }
 
         await next().ConfigureAwait(false);
+    }
+
+    // Nested types can access the enclosing Mediator's private SendInternal* methods, so the
+    // boxed dispatch reuses the exact same pipeline as the strongly-typed overloads.
+    private abstract class RequestHandlerWrapper
+    {
+        public abstract Task<object?> Handle(Mediator mediator, object request, CancellationToken cancellationToken);
+    }
+
+    private sealed class RequestResponseWrapper<TRequest, TResponse> : RequestHandlerWrapper where TRequest : IRequest<TResponse>
+    {
+        public override async Task<object?> Handle(Mediator mediator, object request, CancellationToken cancellationToken)
+        {
+            return await mediator.SendInternal<TRequest, TResponse>((TRequest)request, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private sealed class VoidRequestWrapper<TRequest> : RequestHandlerWrapper where TRequest : IRequest
+    {
+        public override async Task<object?> Handle(Mediator mediator, object request, CancellationToken cancellationToken)
+        {
+            await mediator.SendInternalVoid<TRequest>((TRequest)request, cancellationToken).ConfigureAwait(false);
+            return null;
+        }
     }
 }
 

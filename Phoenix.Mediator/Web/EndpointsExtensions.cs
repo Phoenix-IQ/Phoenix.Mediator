@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Phoenix.Mediator.Abstractions;
 using Phoenix.Mediator.Mediator;
@@ -18,33 +19,77 @@ namespace Phoenix.Mediator.Web;
 
 public static class EndpointsExtensions
 {
+    private const long DefaultMaxMultipartBodySize = 5_000_000;
+    private const int DefaultMultipartTimeoutSeconds = 120;
+
+    /// <summary>
+    /// Discovers and maps endpoint groups, and (by default) also adds the Phoenix exception-handling
+    /// middleware and the <c>/health</c> endpoint. Use the <see cref="MapEndpointsOptions"/> overload
+    /// to opt out of either, or compose the pieces yourself via
+    /// <see cref="UsePhoenixExceptionHandling"/> / <see cref="MapPhoenixHealthChecks"/> for full
+    /// control over middleware ordering.
+    /// </summary>
     public static WebApplication MapEndpoints(this WebApplication app, params Assembly[] assemblies)
+        => MapEndpoints(app, new MapEndpointsOptions(), assemblies);
+
+    /// <inheritdoc cref="MapEndpoints(WebApplication, Assembly[])"/>
+    public static WebApplication MapEndpoints(this WebApplication app, MapEndpointsOptions options, params Assembly[] assemblies)
     {
         ArgumentNullException.ThrowIfNull(app);
+        ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(assemblies);
+
+        if (options.UseExceptionHandling)
+            app.UsePhoenixExceptionHandling();
+
+        if (options.MapHealthChecks)
+            app.MapPhoenixHealthChecks(options.HealthCheckPattern);
+
+        MapEndpointGroups(app, assemblies);
+        return app;
+    }
+
+    /// <summary>
+    /// Registers the Phoenix exception-handling middleware. Call this where you want it in the
+    /// pipeline (typically early) when composing manually instead of relying on <see cref="MapEndpoints(WebApplication, Assembly[])"/>.
+    /// </summary>
+    public static WebApplication UsePhoenixExceptionHandling(this WebApplication app)
+    {
+        ArgumentNullException.ThrowIfNull(app);
         app.UseMiddleware<ExceptionHandlingMiddleware>();
-        app.MapHealthChecks("/health", new HealthCheckOptions
+        return app;
+    }
+
+    /// <summary>
+    /// Maps a public, unauthenticated health endpoint that returns only the overall status.
+    /// Per-check names/descriptions are intentionally NOT exposed (they can leak infrastructure
+    /// detail); map a separate authenticated endpoint if you need detailed diagnostics.
+    /// </summary>
+    public static WebApplication MapPhoenixHealthChecks(this WebApplication app, string pattern = "/health")
+    {
+        ArgumentNullException.ThrowIfNull(app);
+
+        app.MapHealthChecks(pattern, new HealthCheckOptions
         {
             ResponseWriter = async (context, report) =>
             {
                 context.Response.ContentType = "application/json";
                 var response = new
                 {
-                    status = report.Status.ToString(),
-                    checks = report.Entries.Select(e => new
-                    {
-                        name = e.Key,
-                        status = e.Value.Status.ToString(),
-                        description = e.Value.Description
-                    }),
-                    duration = report.TotalDuration
+                    status = report.Status.ToString()
                 };
                 await context.Response.WriteAsync(JsonSerializer.Serialize(response));
             }
         });
+
+        return app;
+    }
+
+    private static void MapEndpointGroups(WebApplication app, Assembly[] assemblies)
+    {
         var endpointGroupType = typeof(BaseEndpointGroup);
         var endpointGroupTypes = GetEndpointAssemblies(app, assemblies)
-            .SelectMany(GetLoadableTypes)
+            .SelectMany(assembly => GetLoadableTypes(assembly, app.Logger))
             .Where(t => t.IsClass && !t.IsAbstract && endpointGroupType.IsAssignableFrom(t))
             .Distinct();
 
@@ -54,7 +99,6 @@ public static class EndpointsExtensions
             var instance = (BaseEndpointGroup)ActivatorUtilities.CreateInstance(scope.ServiceProvider, type);
             instance.Map(app);
         }
-        return app;
     }
 
     private static IEnumerable<Assembly> GetEndpointAssemblies(WebApplication app, IReadOnlyCollection<Assembly> additionalAssemblies)
@@ -99,7 +143,7 @@ public static class EndpointsExtensions
         return assembly is not null && !assembly.IsDynamic;
     }
 
-    private static IEnumerable<Type> GetLoadableTypes(Assembly assembly)
+    private static IEnumerable<Type> GetLoadableTypes(Assembly assembly, ILogger logger)
     {
         try
         {
@@ -107,6 +151,12 @@ public static class EndpointsExtensions
         }
         catch (ReflectionTypeLoadException ex)
         {
+            logger.LogWarning(ex,
+                "Could not load all types from assembly {Assembly} during endpoint discovery; {LoadedCount} of {TotalCount} types were usable. Some endpoint groups may be missing.",
+                assembly.FullName,
+                ex.Types.Count(t => t is not null),
+                ex.Types.Length);
+
             return ex.Types.Where(t => t is not null)!;
         }
     }
@@ -210,91 +260,86 @@ public static class EndpointsExtensions
     // --------------------
     // GET
     // --------------------
-    public static IEndpointRouteBuilder Get(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
+    public static RouteHandlerBuilder Get(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
     {
-        builder.MapGet(pattern, handler)
+        return builder.MapGet(pattern, handler)
             .AddResponses(builder.ServiceProvider, handler, responseDtos);
-        return builder;
     }
 
     // --------------------
     // POST
     // --------------------
-    public static IEndpointRouteBuilder Post(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
+    public static RouteHandlerBuilder Post(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
     {
-        builder.MapPost(pattern, handler)
+        return builder.MapPost(pattern, handler)
             .AddResponses(builder.ServiceProvider, handler, responseDtos);
-        return builder;
     }
 
     // --------------------
     // PUT
     // --------------------
-    public static IEndpointRouteBuilder Put(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
+    public static RouteHandlerBuilder Put(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
     {
-        builder.MapPut(pattern, handler)
+        return builder.MapPut(pattern, handler)
             .AddResponses(builder.ServiceProvider, handler, responseDtos);
-        return builder;
     }
 
     // --------------------
     // DELETE
     // --------------------
-    public static IEndpointRouteBuilder Delete(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
+    public static RouteHandlerBuilder Delete(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
     {
-        builder.MapDelete(pattern, handler)
+        return builder.MapDelete(pattern, handler)
             .AddResponses(builder.ServiceProvider, handler, responseDtos);
-        return builder;
     }
 
     // --------------------
     // PATCH
     // --------------------
-    public static IEndpointRouteBuilder Patch(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
+    public static RouteHandlerBuilder Patch(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
     {
-        builder.MapPatch(pattern, handler)
+        return builder.MapPatch(pattern, handler)
             .AddResponses(builder.ServiceProvider, handler, responseDtos);
-        return builder;
     }
     // --------------------
     // POST MULTIPART
     // --------------------
-    public static IEndpointRouteBuilder PostMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = 5_000_000, int timeoutSeconds = 120, ResponseDto[]? responseDtos = null)
+    public static RouteHandlerBuilder PostMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = DefaultMaxMultipartBodySize, int timeoutSeconds = DefaultMultipartTimeoutSeconds, bool disableAntiforgery = false, ResponseDto[]? responseDtos = null)
     {
-        builder.MapPost(pattern, handler)
-            .DisableAntiforgery()
-            .AddResponses(builder.ServiceProvider, handler, responseDtos)
-            .Accepts<IFormFile>("multipart/form-data")
-            .Accepts<IFormFileCollection>("multipart/form-data")
-            .WithMetadata(new RequestSizeLimitAttribute(maxRequestBodySize))
-            .WithRequestTimeout(TimeSpan.FromSeconds(timeoutSeconds));
-        return builder;
+        return builder.MapPost(pattern, handler)
+            .ConfigureMultiPart(builder.ServiceProvider, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery, responseDtos);
     }
 
     // --------------------
     // PUT MULTIPART
     // --------------------
-    public static IEndpointRouteBuilder PutMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = 5_000_000, int timeoutSeconds = 120, ResponseDto[]? responseDtos = null)
+    public static RouteHandlerBuilder PutMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = DefaultMaxMultipartBodySize, int timeoutSeconds = DefaultMultipartTimeoutSeconds, bool disableAntiforgery = false, ResponseDto[]? responseDtos = null)
     {
-        builder.MapPut(pattern, handler)
-            .DisableAntiforgery()
-            .AddResponses(builder.ServiceProvider, handler, responseDtos)
-            .Accepts<IFormFile>("multipart/form-data")
-            .Accepts<IFormFileCollection>("multipart/form-data")
-            .WithMetadata(new RequestSizeLimitAttribute(maxRequestBodySize))
-            .WithRequestTimeout(TimeSpan.FromSeconds(timeoutSeconds));
-        return builder;
+        return builder.MapPut(pattern, handler)
+            .ConfigureMultiPart(builder.ServiceProvider, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery, responseDtos);
     }
 
-    public static IEndpointRouteBuilder PatchMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = 5_000_000, int timeoutSeconds = 120, ResponseDto[]? responseDtos = null)
+    public static RouteHandlerBuilder PatchMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = DefaultMaxMultipartBodySize, int timeoutSeconds = DefaultMultipartTimeoutSeconds, bool disableAntiforgery = false, ResponseDto[]? responseDtos = null)
     {
-        builder.MapPatch(pattern, handler)
-            .DisableAntiforgery()
-            .AddResponses(builder.ServiceProvider, handler, responseDtos)
+        return builder.MapPatch(pattern, handler)
+            .ConfigureMultiPart(builder.ServiceProvider, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery, responseDtos);
+    }
+
+    private static RouteHandlerBuilder ConfigureMultiPart(this RouteHandlerBuilder route, IServiceProvider services, Delegate handler, long maxRequestBodySize, int timeoutSeconds, bool disableAntiforgery, ResponseDto[]? responseDtos)
+    {
+        route
+            .AddResponses(services, handler, responseDtos)
             .Accepts<IFormFile>("multipart/form-data")
             .Accepts<IFormFileCollection>("multipart/form-data")
             .WithMetadata(new RequestSizeLimitAttribute(maxRequestBodySize))
             .WithRequestTimeout(TimeSpan.FromSeconds(timeoutSeconds));
-        return builder;
+
+        // Antiforgery validation stays ON by default. Only disable it when the caller
+        // explicitly opts in (e.g. a token-authenticated API not relying on cookies),
+        // so cookie-authenticated uploads are not silently exposed to CSRF.
+        if (disableAntiforgery)
+            route.DisableAntiforgery();
+
+        return route;
     }
 }

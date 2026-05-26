@@ -2,17 +2,35 @@
 
 `Phoenix.Mediator` is a lightweight mediator library for ASP.NET Core Minimal APIs.
 
+The core package has **no third-party runtime dependencies**. Validation, Sentry, and Serilog
+support live in opt-in companion packages, so you only pull in what you use.
+
 It provides:
 - Request/handler abstractions (`IRequest`, `IRequest<TResponse>`, `IRequestHandler<...>`)
-- Built-in pipeline behaviors for FluentValidation and Sentry
 - Endpoint-group discovery for Minimal APIs (`BaseEndpointGroup` + `MapEndpoints()`)
 - Consistent API result mapping (`ToApiResult()`) and error wrappers
-- Optional Serilog/Sentry bootstrapping helpers
+- Opt-in pipeline behaviors (FluentValidation, Sentry) via companion packages
+- Opt-in Serilog/Sentry bootstrapping helpers via a companion package
+
+## Packages
+
+| Package | Purpose | Adds dependency on |
+|---------|---------|--------------------|
+| `Phoenix.Mediator` | Core mediator, endpoints, error handling | (none — `Microsoft.AspNetCore.App` only) |
+| `Phoenix.Mediator.Validation` | `AddMediatorValidation()` — FluentValidation behavior | FluentValidation |
+| `Phoenix.Mediator.Sentry` | `AddMediatorSentry()` — Sentry tracing/error behavior | Sentry |
+| `Phoenix.Mediator.Serilog` | `AddLogging()` / request log enrichment | Serilog (no Sentry) |
+| `Phoenix.Mediator.Serilog.Sentry` | `AddSentry()` + `WriteToSentry()` add-on | Sentry, Sentry.Serilog |
 
 ## Install
 
 ```bash
 dotnet add package Phoenix.Mediator
+# optional:
+dotnet add package Phoenix.Mediator.Validation
+dotnet add package Phoenix.Mediator.Sentry
+dotnet add package Phoenix.Mediator.Serilog
+dotnet add package Phoenix.Mediator.Serilog.Sentry  # only if you want the Sentry sink
 ```
 
 ## Target frameworks
@@ -30,8 +48,12 @@ using Phoenix.Mediator.Mediator;
 using System.Reflection;
 
 var builder = WebApplication.CreateBuilder(args);
+var assembly = Assembly.GetExecutingAssembly();
 
-builder.Services.AddMediator(Assembly.GetExecutingAssembly());
+builder.Services
+    .AddMediator(assembly)        // core: ISender + request handlers
+    .AddMediatorSentry()          // optional: Phoenix.Mediator.Sentry
+    .AddMediatorValidation(assembly); // optional: Phoenix.Mediator.Validation
 ```
 
 Empty `IRequest` responses default to `204 No Content`. Configure `200 OK` during registration when that better matches your API contract:
@@ -40,14 +62,17 @@ Empty `IRequest` responses default to `204 No Content`. Configure `200 OK` durin
 builder.Services.AddMediator(options =>
 {
     options.EmptyResponseStatusCode = EmptyResponseStatusCode.Ok;
-}, Assembly.GetExecutingAssembly());
+}, assembly);
 ```
 
 `AddMediator(assemblies...)` registers:
 - `ISender` (scoped)
-- built-in pipeline behaviors (Sentry + FluentValidation)
 - request handlers from the provided assemblies
-- FluentValidation validators from the provided assemblies
+- the `/health` endpoint support
+
+Pipeline behaviors are **opt-in** and run in registration order (first registered = outermost).
+`AddMediatorSentry()` before `AddMediatorValidation(...)` makes the Sentry span wrap validation.
+`AddMediatorValidation(assemblies...)` also registers FluentValidation validators from those assemblies.
 
 ### 2. Create a request + handler
 
@@ -103,12 +128,28 @@ If your endpoint groups live in a separate class library, pass those assemblies 
 app.MapEndpoints(typeof(GreetingEndpoints).Assembly);
 ```
 
+By default `MapEndpoints` also registers the exception-handling middleware and maps `/health`. To opt out of either (e.g. you register the middleware yourself for precise ordering), pass `MapEndpointsOptions`:
+
+```csharp
+app.MapEndpoints(new MapEndpointsOptions
+{
+    UseExceptionHandling = false, // you call app.UsePhoenixExceptionHandling() yourself
+    MapHealthChecks = false       // or app.MapPhoenixHealthChecks("/healthz")
+});
+```
+
+Or compose the pieces directly: `app.UsePhoenixExceptionHandling();`, `app.MapPhoenixHealthChecks();`, then `app.MapEndpoints(...)`.
+
 ## Sending requests
+
+Send a request through the mediator and map the result to an `IResult` with `ToApiResult()`:
 
 ```csharp
 object? result = await sender.Send(request, cancellationToken);
 IResult apiResult = result.ToApiResult();
 ```
+
+Note: the parameterless `ToApiResult()` maps a `null`/void result to `204 No Content` and does **not** consult `EmptyResponseStatusCode`. If you need the configured empty-response status for void requests, use `sender.SendAsApiResult(request, ct)` instead.
 
 `ISender.Send(...)` accepts either:
 - `IRequest<TResponse>`
@@ -137,11 +178,12 @@ Built-in exception types:
 - `BadRequestException`
 - `NotFoundException`
 
-Error body shape:
+Error body shape (the `traceId` correlates the response with your logs/Sentry):
 
 ```json
 {
-  "errors": ["message 1", "message 2"]
+  "errors": ["message 1", "message 2"],
+  "traceId": "0af7651916cd43dd8448eb211c80319c"
 }
 ```
 
@@ -158,19 +200,37 @@ These helpers:
 
 ## Validation
 
-When you use `AddMediator(assemblies...)`, validators in those assemblies are auto-registered via FluentValidation.
+Install `Phoenix.Mediator.Validation` and call `AddMediatorValidation(assemblies...)` — it registers the
+validation pipeline behavior and all FluentValidation validators in those assemblies.
 Validation failures are returned as `400` with the `errors` response body.
 
 ## Optional logging helpers
 
+Install `Phoenix.Mediator.Serilog` (Serilog only, no Sentry dependency):
+
 ```csharp
 using Phoenix.Mediator.Extensions;
 
-builder.AddLogging(hasSentry: true);
+builder.AddLogging();
 var app = builder.Build();
 app.UsePhoenixRequestLogEnrichment();
 ```
 
-Sentry PII remains disabled unless you explicitly set `Sentry:SendDefaultPii=true`.
+To also send events to Sentry, install `Phoenix.Mediator.Serilog.Sentry` and compose the add-on:
+
+```csharp
+using Phoenix.Mediator.Extensions;
+
+builder.AddSentry(); // Sentry ASP.NET integration (error capture + tracing + IHub)
+builder.AddLogging(configureSinks: lc => lc.WriteToSentry(builder.Configuration)); // Serilog → Sentry sink
+```
+
+File logging is on by default (rolling files under `{ContentRoot}/logs`). For containerized or horizontally-scaled deployments, disable it and rely on stdout collection:
+
+```csharp
+builder.AddLogging(enableFileLogging: false);
+```
+
+Sentry PII remains disabled unless you explicitly set `Sentry:SendDefaultPii=true`. Client-IP log enrichment is also off unless PII is enabled (or you pass `app.UsePhoenixRequestLogEnrichment(logClientIp: true)`); the trace id is always enriched.
 
 

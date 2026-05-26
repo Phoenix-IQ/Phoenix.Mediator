@@ -19,6 +19,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Phoenix.Mediator\Phoenix.Mediator.csproj" />
+    <ProjectReference Include="..\Phoenix.Mediator.Validation\Phoenix.Mediator.Validation.csproj" />
+    <ProjectReference Include="..\Phoenix.Mediator.Sentry\Phoenix.Mediator.Sentry.csproj" />
   </ItemGroup>
 
 </Project>

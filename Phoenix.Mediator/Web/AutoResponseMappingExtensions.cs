@@ -9,10 +9,16 @@ public static class AutoResponseMappingExtensions
 {
     /// <summary>
     /// Maps mediator outputs to minimal-api results:
-    /// - null => 204 NoContent by default, or 200 OK when requested
+    /// - null => 204 NoContent (ALWAYS — this overload does not consult <see cref="MediatorOptions.EmptyResponseStatusCode"/>)
     /// - IResult => passthrough (allows handlers/pipelines to return Results.* directly)
     /// - ErrorResponse => uses ErrorResponse.HttpStatusCode
     /// - otherwise => 200 OK (and body = value)
+    /// <para>
+    /// IMPORTANT: this overload cannot see the configured <see cref="MediatorOptions.EmptyResponseStatusCode"/>,
+    /// so void/empty requests always map to 204 here. To honor the configured empty-response status code
+    /// (e.g. 200 OK), call <see cref="SendAsApiResult(ISender, object, CancellationToken)"/> instead of
+    /// <c>sender.Send(...).ToApiResult()</c>.
+    /// </para>
     /// </summary>
     public static IResult ToApiResult(this object? value)
     {
@@ -76,7 +82,7 @@ public static class AutoResponseMappingExtensions
         {
             EmptyResponseStatusCode.Ok => Results.Ok(),
             EmptyResponseStatusCode.NoContent => Results.NoContent(),
-            _ => throw new InvalidOperationException("Empty response status code must be 200 OK or 204 No Content.")
+            _ => throw new InvalidOperationException(MediatorMessages.InvalidEmptyResponseStatusCode)
         };
     }
 

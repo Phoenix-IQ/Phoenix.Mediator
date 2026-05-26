@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <PackageId>Phoenix.Mediator.Serilog.Sentry</PackageId>
+    <Title>Phoenix.Mediator.Serilog.Sentry</Title>
+    <Description>Sentry add-on for Phoenix.Mediator.Serilog: AddSentry() ASP.NET integration + WriteToSentry() Serilog sink.</Description>
+    <Authors>Phoenix-IQ</Authors>
+    <Company>Phoenix-IQ</Company>
+    <PackageTags>mediator;serilog;sentry;logging;aspnetcore</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/Phoenix-IQ/Phoenix.Mediator</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Phoenix-IQ/Phoenix.Mediator.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+
+    <Deterministic>true</Deterministic>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Sentry.AspNetCore" Version="6.5.0" />
+    <PackageReference Include="Sentry.Serilog" Version="6.5.0" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.300" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Phoenix.Mediator.Serilog\Phoenix.Mediator.Serilog.csproj" />
+  </ItemGroup>
+
+</Project>

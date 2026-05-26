@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Phoenix.Mediator.Exceptions;
+using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
 
@@ -15,6 +16,11 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
     private static readonly string[] EnglishLanguageAliases = ["en", "En", "English"];
     private static readonly string[] ArabicLanguageAliases = ["ar", "Ar", "Arabic"];
 
+    // Snapshot configuration once at construction. The middleware instance is created a single
+    // time for the app lifetime, so there is no need to re-read/re-allocate this on every error.
+    private readonly Dictionary<string, string> errorMessages = BuildErrorMessages(configuration);
+    private readonly IReadOnlyList<string> defaultLanguageCandidates = BuildDefaultLanguageCandidates(configuration);
+
     public async Task InvokeAsync(HttpContext context)
     {
         try
@@ -25,9 +31,9 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
         {
             await HandleHttpResponseException(context, ex);
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException ex)
         {
-            await HandleUnauthorizedException(context);
+            await HandleUnauthorizedException(context, ex);
         }
         catch (Exception ex)
         {
@@ -37,27 +43,31 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
 
     private async Task HandleHttpResponseException(HttpContext context, HttpResponseException exception)
     {
-        context.Response.Clear();
-
         logger.LogWarning(exception,
             "HttpResponseException occurred for {Method} {Path}",
             context.Request.Method,
             context.Request.Path);
+
+        if (!TryResetResponse(context, exception))
+            return;
 
         context.Response.ContentType = "application/json";
         context.Response.StatusCode = (int)exception.HttpStatusCode;
 
         var json = JsonSerializer.Serialize(new
         {
-            errors = exception.Errors
+            errors = exception.Errors,
+            traceId = GetTraceId(context)
         });
 
         await context.Response.WriteAsync(json);
     }
 
-    private static Task HandleUnauthorizedException(HttpContext context)
+    private Task HandleUnauthorizedException(HttpContext context, Exception exception)
     {
-        context.Response.Clear();
+        if (!TryResetResponse(context, exception))
+            return Task.CompletedTask;
+
         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
 
         return Task.CompletedTask;
@@ -65,8 +75,6 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
 
     private async Task HandleUnhandledException(HttpContext context, Exception exception)
     {
-        context.Response.Clear();
-
         var statusCode = exception switch
         {
             KeyNotFoundException => HttpStatusCode.NotFound,
@@ -79,41 +87,69 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
             context.Request.Method,
             context.Request.Path);
 
+        if (!TryResetResponse(context, exception))
+            return;
+
         context.Response.ContentType = "application/json";
         context.Response.StatusCode = (int)statusCode;
 
         var json = JsonSerializer.Serialize(new
         {
-            errors = new[] { GetUnknownErrorMessage(context) }
+            errors = new[] { GetUnknownErrorMessage(context) },
+            traceId = GetTraceId(context)
         });
 
         await context.Response.WriteAsync(json);
     }
 
+    private static string GetTraceId(HttpContext context)
+        => Activity.Current?.TraceId.ToString() ?? context.TraceIdentifier;
+
+    /// <summary>
+    /// Resets the response so an error body can be written. If the response has already
+    /// started sending, the headers/body cannot be cleared — we log and bail out instead
+    /// of letting <c>HttpResponse.Clear()</c> throw a secondary exception that would
+    /// tear the connection and mask the original error.
+    /// </summary>
+    private bool TryResetResponse(HttpContext context, Exception exception)
+    {
+        if (context.Response.HasStarted)
+        {
+            logger.LogError(exception,
+                "Response already started; cannot write error body for {Method} {Path}",
+                context.Request.Method,
+                context.Request.Path);
+
+            return false;
+        }
+
+        context.Response.Clear();
+        return true;
+    }
+
     private string GetUnknownErrorMessage(HttpContext context)
     {
-        var messages = GetConfiguredErrorMessages();
-        if (messages.Count == 0)
+        if (errorMessages.Count == 0)
             return UnknownErrorMessage;
 
         var acceptLanguage = context.Request.Headers.AcceptLanguage.ToString();
         foreach (var candidate in GetLanguageCandidates(acceptLanguage))
         {
-            if (messages.TryGetValue(candidate, out var message))
+            if (errorMessages.TryGetValue(candidate, out var message))
                 return message;
         }
 
-        foreach (var candidate in GetDefaultLanguageCandidates())
+        foreach (var candidate in defaultLanguageCandidates)
         {
-            if (messages.TryGetValue(candidate, out var message))
+            if (errorMessages.TryGetValue(candidate, out var message))
                 return message;
         }
 
-        return messages.Values.FirstOrDefault(static message => !string.IsNullOrWhiteSpace(message))
+        return errorMessages.Values.FirstOrDefault(static message => !string.IsNullOrWhiteSpace(message))
             ?? UnknownErrorMessage;
     }
 
-    private Dictionary<string, string> GetConfiguredErrorMessages()
+    private static Dictionary<string, string> BuildErrorMessages(IConfiguration configuration)
     {
         var section = configuration.GetSection(ErrorMessagesSectionName);
         if (!section.Exists())
@@ -125,7 +161,7 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
             .ToDictionary(static child => child.Key, static child => child.Value!, StringComparer.OrdinalIgnoreCase);
     }
 
-    private IEnumerable<string> GetDefaultLanguageCandidates()
+    private static IReadOnlyList<string> BuildDefaultLanguageCandidates(IConfiguration configuration)
     {
         foreach (var key in DefaultLanguageKeys)
         {

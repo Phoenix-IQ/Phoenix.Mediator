@@ -10,10 +10,17 @@
     <PackageId>Phoenix.Mediator</PackageId>
     <Title>Phoenix.Mediator</Title>
     <Description>Lightweight mediator implementation with optional pipeline behaviors (validation + Sentry) and helpers for ASP.NET Core Minimal APIs.</Description>
-    <Authors>phoen</Authors>
+    <Authors>Phoenix-IQ</Authors>
+    <Company>Phoenix-IQ</Company>
     <PackageTags>mediator;cqrs;aspnetcore;minimal-api;fluentvalidation;sentry</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/Phoenix-IQ/Phoenix.Mediator</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Phoenix-IQ/Phoenix.Mediator.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- Ship XML docs for documented members without failing on undocumented public APIs. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
 
     <!-- Deterministic builds + SourceLink -->
     <Deterministic>true</Deterministic>
@@ -29,18 +36,9 @@
 
 	</ItemGroup>
 	<ItemGroup>
-	  <PackageReference Include="FluentValidation" Version="12.1.1" />
-	  <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.1.1" />
+	  <!-- Core has no third-party runtime dependencies. Pipeline behaviors and logging
+	       live in opt-in companion packages (Phoenix.Mediator.Validation / .Sentry / .Serilog). -->
 	  <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.300" PrivateAssets="All" />
-	  <PackageReference Include="Sentry" Version="6.5.0" />
-	  <PackageReference Include="Sentry.AspNetCore" Version="6.5.0" />
-	  <PackageReference Include="Sentry.Serilog" Version="6.5.0" />
-	  <PackageReference Include="Serilog.Enrichers.Environment" Version="3.0.1" />
-	  <PackageReference Include="Serilog.Exceptions" Version="8.4.0" />
-	  <PackageReference Include="Serilog.Extensions.Hosting" Version="10.0.0" />
-	  <PackageReference Include="Serilog.Formatting.Compact" Version="3.0.0" />
-	  <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
-	  <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
 	</ItemGroup>
 
   <ItemGroup>
