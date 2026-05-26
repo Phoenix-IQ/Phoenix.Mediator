@@ -36,7 +36,7 @@ public static class LoggingExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        Serilog.Debugging.SelfLog.Enable(Console.Error);
+        global::Serilog.Debugging.SelfLog.Enable(Console.Error);
         builder.Host.UseSerilog((context, loggerConfig) =>
         {
             var env = context.HostingEnvironment;
