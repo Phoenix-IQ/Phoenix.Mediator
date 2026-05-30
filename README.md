@@ -21,8 +21,11 @@ It provides:
 | `Phoenix.Mediator.Sentry` | `AddMediatorSentry()` — Sentry tracing/error behavior | Sentry |
 | `Phoenix.Mediator.Serilog` | `AddLogging()` / request log enrichment | Serilog (no Sentry) |
 | `Phoenix.Mediator.Serilog.Sentry` | `AddSentry()` + `WriteToSentry()` add-on | Sentry, Sentry.Serilog |
+| `Phoenix.Mediator.All` | Convenience bundle — depends on all of the above | everything above |
 
 ## Install
+
+Pick the individual packages you need:
 
 ```bash
 dotnet add package Phoenix.Mediator
@@ -32,6 +35,14 @@ dotnet add package Phoenix.Mediator.Sentry
 dotnet add package Phoenix.Mediator.Serilog
 dotnet add package Phoenix.Mediator.Serilog.Sentry  # only if you want the Sentry sink
 ```
+
+…or pull everything in one shot with the bundle:
+
+```bash
+dotnet add package Phoenix.Mediator.All
+```
+
+`Phoenix.Mediator.All` is a meta-package: it ships no code, just transitive references to every package in the table above. Prefer the individual packages when you want to avoid unused third-party dependencies (FluentValidation, Sentry, Serilog).
 
 ## Target frameworks
 
