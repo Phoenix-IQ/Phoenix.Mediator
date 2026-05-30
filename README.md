@@ -209,6 +209,45 @@ These helpers:
 - Infer success response metadata from request type (`IRequest<T>` => `200`, `IRequest` => configured empty response status)
 - Allow explicit response metadata via `ResponseDto`
 
+## Authorization
+
+`Phoenix.Mediator.Web.AuthorizationExtensions.RequireRole<TBuilder, TRole>(...)` is a thin wrapper over
+`RequireAuthorization(...)` that takes any **enum** as the role type. Enum member names are used as the
+role-claim values, so they must match the roles your identity provider issues.
+
+Define your roles as an enum and gate endpoints with them:
+
+```csharp
+public enum AppRole
+{
+    Admin,
+    Manager,
+    User
+}
+
+public sealed class AdminEndpoints : BaseEndpointGroup
+{
+    public override void Map(WebApplication app)
+    {
+        app.MapGroup(GroupName)
+            .Get("admin/stats", (ISender sender, CancellationToken ct) => /* ... */)
+            .RequireRole(AppRole.Admin);                       // single role
+
+        app.MapGroup(GroupName)
+            .Post("reports", (ISender sender, CancellationToken ct) => /* ... */)
+            .RequireRole(AppRole.Admin, AppRole.Manager);      // OR — either role works
+    }
+}
+```
+
+Notes:
+- Multiple roles are **OR**-combined (matches ASP.NET Core's `AuthorizeAttribute.Roles` semantics).
+- Calling `RequireRole<TBuilder, TRole>()` with no roles is equivalent to `RequireAuthorization()`
+  (any authenticated user). For that case, prefer `RequireAuthorization()` directly — type inference
+  can't pick `TRole` from an empty argument list.
+- Both type parameters are inferred at the call site, so you write `.RequireRole(AppRole.Admin)`,
+  not `.RequireRole<RouteHandlerBuilder, AppRole>(AppRole.Admin)`.
+
 ## Validation
 
 Install `Phoenix.Mediator.Validation` and call `AddMediatorValidation(assemblies...)` — it registers the
