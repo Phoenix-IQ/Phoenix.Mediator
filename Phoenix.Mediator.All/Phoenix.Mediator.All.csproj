@@ -19,12 +19,11 @@
 
     <Deterministic>true</Deterministic>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
-    <EmbedUntrackedSources>true</EmbedUntrackedSources>
-    <IncludeSymbols>true</IncludeSymbols>
-    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
 
-    <!-- Meta-package: no code, no assembly shipped. -->
+    <!-- Meta-package: no code, no assembly shipped, so no symbol package either
+         (NuGet.org rejects empty .snupkg with "package does not contain any symbol files"). -->
     <IncludeBuildOutput>false</IncludeBuildOutput>
+    <IncludeSymbols>false</IncludeSymbols>
     <SuppressDependenciesWhenPacking>false</SuppressDependenciesWhenPacking>
     <NoWarn>$(NoWarn);CS1591;NU5128</NoWarn>
   </PropertyGroup>
