@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.Http;
 using Serilog;
 using Serilog.Events;
 using Serilog.Exceptions;
+using Serilog.Exceptions.Core;
+using Serilog.Exceptions.Filters;
 using Serilog.Context;
 using Serilog.Formatting.Compact;
 using System.Diagnostics;
@@ -12,6 +14,49 @@ namespace Phoenix.Mediator.Serilog;
 
 public static class LoggingExtensions
 {
+    /// <summary>
+    /// Depth limit for Serilog's own destructuring of <c>{@Property}</c> values. This is Serilog's
+    /// default, stated explicitly so its relationship to <see cref="ExceptionDestructuringDepth"/>
+    /// is visible: past this depth Serilog nulls the remainder and writes "Maximum destructuring
+    /// depth reached." to SelfLog — once per branch that bottoms out, so a wide graph produces a
+    /// burst of them.
+    /// </summary>
+    private const int MaximumDestructuringDepth = 10;
+
+    /// <summary>
+    /// Depth limit for the exception property tree built by <c>Serilog.Exceptions</c>, kept below
+    /// <see cref="MaximumDestructuringDepth"/> because the enricher attaches its tree as a
+    /// root-level property that Serilog then re-walks, adding a level per nested collection.
+    /// <para>
+    /// This narrows the gap but does not close it on its own — a wide enough graph still trips the
+    /// limiter. <see cref="UnwalkableExceptionProperties"/> is what actually bounds the EF Core case.
+    /// </para>
+    /// </summary>
+    private const int ExceptionDestructuringDepth = 8;
+
+    /// <summary>
+    /// Property names the reflection-based exception destructurer must not follow.
+    /// <para>
+    /// These are object-graph entry points rather than diagnostic data. EF Core's
+    /// <c>DbUpdateException.Entries</c> is the case that motivated this: every <c>EntityEntry</c>
+    /// exposes <c>Metadata</c> (the entire <c>IEntityType</c> model graph) and <c>Context</c>
+    /// (which leads back through the change tracker to every tracked entry). The destructurer
+    /// copes with the cycles; it is the depth of the model graph that overruns Serilog's limiter,
+    /// flooding SelfLog while the recorded detail past the limit is nulled out anyway.
+    /// </para>
+    /// <para>
+    /// Filtering by name keeps this package free of an EF Core dependency. The exception's type,
+    /// message and stack trace are untouched — only the reflected property tree is pruned.
+    /// </para>
+    /// </summary>
+    private static readonly string[] UnwalkableExceptionProperties =
+    [
+        "Entries",      // EF Core DbUpdateException -> EntityEntry[]
+        "Context",      // EF Core EntityEntry -> DbContext -> ChangeTracker -> entries
+        "ChangeTracker",
+        "Metadata",     // EF Core IEntityType: the whole model graph
+    ];
+
     /// <summary>
     /// Configures Serilog with a console sink and (optionally) rolling file sinks.
     /// Call early in Program.cs: <c>builder.AddLogging();</c>
@@ -58,8 +103,12 @@ public static class LoggingExtensions
         loggerConfig
             .MinimumLevel.Information()
             .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
+            .Destructure.ToMaximumDepth(MaximumDestructuringDepth)
             .Enrich.FromLogContext()
-            .Enrich.WithExceptionDetails()
+            .Enrich.WithExceptionDetails(new DestructuringOptionsBuilder()
+                .WithDefaultDestructurers()
+                .WithDestructuringDepth(ExceptionDestructuringDepth)
+                .WithFilter(new IgnorePropertyByNameExceptionFilter(UnwalkableExceptionProperties)))
             .Enrich.WithMachineName()
             .WriteTo.Console(
                 outputTemplate:
