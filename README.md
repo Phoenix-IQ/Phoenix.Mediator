@@ -598,7 +598,38 @@ builder.AddLogging(enableFileLogging: false);
 
 Sentry PII remains disabled unless you explicitly set `Sentry:SendDefaultPii=true`. Client-IP log enrichment is also off unless PII is enabled (or you pass `app.UsePhoenixRequestLogEnrichment(logClientIp: true)`); the trace id is always enriched.
 
+### Log levels
+
+`AddLogging()` applies the standard `Logging:LogLevel` section. `UseSerilog` replaces the Microsoft logger factory that normally enforces it, so the package maps it onto Serilog's minimum levels: `Default` sets the minimum level, and every other key sets the level for that category and everything beneath it.
+
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning",
+      "Microsoft.EntityFrameworkCore": "Warning",
+      "Hangfire": "Warning"
+    }
+  }
+}
+```
+
+Notes:
+- Without the section, the built-in levels apply: `Information`, with `Microsoft.AspNetCore` at `Warning`. They also stay in effect for anything the section doesn't set, so add `"Microsoft.AspNetCore": "Information"` explicitly if you want per-request logs.
+- Values are `LogLevel` names (`Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None`). `None` behaves as `Critical`, so that category still logs Critical events. Unrecognized values are skipped and reported on stderr through Serilog's `SelfLog`.
+- Keys match whole dot-separated segments: `Microsoft.EntityFrameworkCore` covers `Microsoft.EntityFrameworkCore.Database.Command`, but `Microsoft.EntityFramework` doesn't. `*` wildcards and provider-specific sections such as `Logging:Console:LogLevel` aren't supported.
+- Levels are read once at startup; restart the app to pick up changes.
+- Minimum levels set in `configureSinks` are applied after the section, so they take precedence.
+
 ## Upgrading
+
+### 2.3.1
+
+- **`AddLogging()` applies the `Logging:LogLevel` section** (see [Log levels](#log-levels)). `UseSerilog` bypassed it, so
+  it was silently ignored — EF Core, for one, logged every SQL command at `Information` even where the section said
+  `Warning`. Levels now follow the section, so a level set there and never noticed (`"Default": "Debug"`, say) takes
+  effect.
 
 ### 2.3.0
 

@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Configuration;
 using Serilog;
 using Serilog.Events;
 using Serilog.Exceptions;
@@ -9,6 +10,7 @@ using Serilog.Exceptions.Filters;
 using Serilog.Context;
 using Serilog.Formatting.Compact;
 using System.Diagnostics;
+using LogLevel = Microsoft.Extensions.Logging.LogLevel;
 
 namespace Phoenix.Mediator.Serilog;
 
@@ -57,9 +59,20 @@ public static class LoggingExtensions
         "Metadata",     // EF Core IEntityType: the whole model graph
     ];
 
+    private const string LogLevelSection = "Logging:LogLevel";
+
     /// <summary>
     /// Configures Serilog with a console sink and (optionally) rolling file sinks.
     /// Call early in Program.cs: <c>builder.AddLogging();</c>
+    /// <para>
+    /// Minimum levels follow the standard <c>Logging:LogLevel</c> configuration section, which
+    /// <c>UseSerilog</c> would otherwise bypass: <c>Default</c> sets the minimum level and every other key
+    /// sets the level for that category and those beneath it (e.g. <c>"Microsoft.EntityFrameworkCore": "Warning"</c>).
+    /// The built-in levels — <c>Information</c>, with <c>Microsoft.AspNetCore</c> at <c>Warning</c> — apply
+    /// when the section is absent and for anything it doesn't set. <c>None</c> behaves as <c>Critical</c>,
+    /// unrecognized values are skipped with a SelfLog message, and levels are read once, when the logger
+    /// is built at startup.
+    /// </para>
     /// <para>
     /// This package has no error-tracking dependency. To send events to Sentry, install
     /// <c>Phoenix.Mediator.Serilog.Sentry</c> and pass its sink via <paramref name="configureSinks"/>
@@ -75,7 +88,8 @@ public static class LoggingExtensions
     /// </param>
     /// <param name="configureSinks">
     /// Optional hook to add extra Serilog sinks (e.g. the Sentry sink from the companion package).
-    /// Invoked after the built-in console/file sinks are configured.
+    /// Invoked after the built-in console/file sinks and the <c>Logging:LogLevel</c> levels are
+    /// configured, so minimum levels set here take precedence over configuration.
     /// </param>
     public static void AddLogging(this WebApplicationBuilder builder, bool enableFileLogging = true, Action<LoggerConfiguration>? configureSinks = null)
     {
@@ -94,8 +108,57 @@ public static class LoggingExtensions
             }
 
             ConfigureBaseSerilog(loggerConfig, logsDir);
+            ApplyConfiguredLogLevels(loggerConfig, context.Configuration);
             configureSinks?.Invoke(loggerConfig);
         });
+    }
+
+    /// <summary>
+    /// Maps <c>Logging:LogLevel</c> onto Serilog's minimum levels. <c>UseSerilog</c> replaces the
+    /// Microsoft logger factory that normally enforces that section, so without this it is silently
+    /// ignored — EF Core, for one, then logs every SQL command at Information.
+    /// <para>
+    /// Applied over the built-in levels: Serilog keeps the last minimum level and the last override per
+    /// category, so configured keys replace the defaults they name and leave the rest in place.
+    /// </para>
+    /// </summary>
+    private static void ApplyConfiguredLogLevels(LoggerConfiguration loggerConfig, IConfiguration configuration)
+    {
+        foreach (var entry in configuration.GetSection(LogLevelSection).GetChildren())
+        {
+            // A blank value is a placeholder or a nested section; Microsoft.Extensions.Logging skips those too.
+            if (string.IsNullOrEmpty(entry.Value))
+                continue;
+
+            if (!TryConvertLogLevel(entry.Value, out var level))
+            {
+                // Skip rather than throw, so a typo can't fail startup. AddLogging routes SelfLog to stderr.
+                global::Serilog.Debugging.SelfLog.WriteLine(
+                    "Ignoring {0}:{1}: \"{2}\" is not a LogLevel (Trace, Debug, Information, Warning, Error, Critical, None).",
+                    LogLevelSection, entry.Key, entry.Value);
+                continue;
+            }
+
+            if (string.Equals(entry.Key, "Default", StringComparison.OrdinalIgnoreCase))
+                loggerConfig.MinimumLevel.Is(level);
+            else
+                loggerConfig.MinimumLevel.Override(entry.Key, level);
+        }
+    }
+
+    private static bool TryConvertLogLevel(string value, out LogEventLevel level)
+    {
+        // Enum.TryParse also accepts any integer, so reject values outside the enum: "-1" would enable everything.
+        if (!Enum.TryParse(value, ignoreCase: true, out LogLevel logLevel) || !Enum.IsDefined(logLevel))
+        {
+            level = default;
+            return false;
+        }
+
+        // Trace..Critical (0-5) line up with Verbose..Fatal. None (6) clamps to Fatal rather than LevelAlias.Off,
+        // so a category set to None still logs Critical events.
+        level = (LogEventLevel)Math.Min((int)logLevel, (int)LogEventLevel.Fatal);
+        return true;
     }
 
     private static void ConfigureBaseSerilog(LoggerConfiguration loggerConfig, string? logsDir)
