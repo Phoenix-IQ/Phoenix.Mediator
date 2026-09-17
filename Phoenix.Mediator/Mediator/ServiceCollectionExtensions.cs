@@ -1,6 +1,9 @@
+using Microsoft.AspNetCore.Http.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 using Phoenix.Mediator.Abstractions;
+using Phoenix.Mediator.Web;
 using System.Reflection;
 
 namespace Phoenix.Mediator.Mediator;
@@ -23,20 +26,23 @@ public static class ServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.AddOptions<MediatorOptions>()
-            .Validate(
-                options => options.EmptyResponseStatusCode is EmptyResponseStatusCode.Ok or EmptyResponseStatusCode.NoContent,
-                MediatorMessages.InvalidEmptyResponseStatusCode);
+        services.AddOptions<MediatorOptions>();
+        // TryAddEnumerable rather than OptionsBuilder.Validate(), which appends on every call and would
+        // run the check (and repeat its failure message) once per AddMediator call.
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<MediatorOptions>, MediatorOptionsValidator>());
 
         if (configureOptions is not null)
             services.Configure(configureOptions);
 
         services.AddHealthChecks();
+        // Keeps [FromRoute]/[FromQuery]/[FromHeader] request members out of the Minimal API JSON body and its OpenAPI schema.
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IPostConfigureOptions<JsonOptions>, RequestBodyJsonOptionsSetup>());
         services.GetOrCreateAssemblyRegistry();
         // IMPORTANT: Mediator must be scoped so request handlers can depend on scoped services
         // (e.g. current user, DbContext, HttpContext-related services).
         services.TryAddScoped<Mediator>();
-        services.TryAddScoped<ISender, Mediator>();
+        // Forward to the scope's Mediator so ISender and Mediator resolve to the same instance.
+        services.TryAddScoped<ISender>(static provider => provider.GetRequiredService<Mediator>());
 
         // Pipeline behaviors are opt-in via companion packages:
         // - Phoenix.Mediator.Sentry      -> services.AddMediatorSentry()
@@ -92,12 +98,12 @@ public static class ServiceCollectionExtensions
 
         foreach (var assembly in assemblies.Distinct())
         {
-            foreach (var type in assembly.DefinedTypes)
+            foreach (var type in AssemblyTypeLoader.GetLoadableTypes(assembly))
             {
                 if (!type.IsClass || type.IsAbstract)
                     continue;
 
-                var interfaces = type.ImplementedInterfaces;
+                var interfaces = type.GetInterfaces();
                 foreach (var it in interfaces)
                 {
                     if (!it.IsGenericType)
@@ -106,7 +112,7 @@ public static class ServiceCollectionExtensions
                     var def = it.GetGenericTypeDefinition();
                     if (def == typeof(IRequestHandler<,>) || def == typeof(IRequestHandler<>))
                     {
-                        services.TryAddTransient(it, type.AsType());
+                        services.TryAddTransient(it, type);
                     }
                 }
             }

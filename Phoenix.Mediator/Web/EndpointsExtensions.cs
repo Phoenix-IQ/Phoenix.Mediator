@@ -95,9 +95,18 @@ public static class EndpointsExtensions
 
         foreach (var type in endpointGroupTypes)
         {
-            using var scope = app.Services.CreateScope();
-            var instance = (BaseEndpointGroup)ActivatorUtilities.CreateInstance(scope.ServiceProvider, type);
-            instance.Map(app);
+            // Dispose asynchronously: a synchronous scope Dispose throws when a resolved dependency only
+            // implements IAsyncDisposable. Blocking is fine here because this runs once at startup.
+            var scope = app.Services.CreateAsyncScope();
+            try
+            {
+                var instance = (BaseEndpointGroup)ActivatorUtilities.CreateInstance(scope.ServiceProvider, type);
+                instance.Map(app);
+            }
+            finally
+            {
+                scope.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
         }
     }
 
@@ -145,20 +154,11 @@ public static class EndpointsExtensions
 
     private static IEnumerable<Type> GetLoadableTypes(Assembly assembly, ILogger logger)
     {
-        try
-        {
-            return assembly.GetTypes();
-        }
-        catch (ReflectionTypeLoadException ex)
-        {
-            logger.LogWarning(ex,
-                "Could not load all types from assembly {Assembly} during endpoint discovery; {LoadedCount} of {TotalCount} types were usable. Some endpoint groups may be missing.",
-                assembly.FullName,
-                ex.Types.Count(t => t is not null),
-                ex.Types.Length);
-
-            return ex.Types.Where(t => t is not null)!;
-        }
+        return AssemblyTypeLoader.GetLoadableTypes(assembly, ex => logger.LogWarning(ex,
+            "Could not load all types from assembly {Assembly} during endpoint discovery; {LoadedCount} of {TotalCount} types were usable. Some endpoint groups may be missing.",
+            assembly.FullName,
+            ex.Types.Count(t => t is not null),
+            ex.Types.Length));
     }
 
     private static RouteHandlerBuilder AddResponses(this RouteHandlerBuilder handler, IServiceProvider services, Delegate endpointHandler, ResponseDto[]? responses)

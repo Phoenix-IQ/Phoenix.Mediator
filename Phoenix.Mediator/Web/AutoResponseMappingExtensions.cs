@@ -38,8 +38,13 @@ public static class AutoResponseMappingExtensions
     }
 
     /// <summary>
-    /// Sends a request through the mediator and maps the result (or exception) to an <see cref="IResult"/>.
+    /// Sends a request through the mediator and maps the result to an <see cref="IResult"/>.
     /// Use this in HTTP endpoint handlers instead of calling <c>sender.Send()</c> + <c>ToApiResult()</c> manually.
+    /// <para>
+    /// Exceptions are not caught here: they propagate to the exception-handling middleware
+    /// (<see cref="EndpointsExtensions.UsePhoenixExceptionHandling"/>, registered by <c>MapEndpoints</c> by default),
+    /// which turns them into error responses.
+    /// </para>
     /// </summary>
     public static async Task<IResult> SendAsApiResult(this ISender sender, object request, CancellationToken cancellationToken = default)
     {

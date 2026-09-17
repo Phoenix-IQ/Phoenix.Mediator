@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Options;
+
 namespace Phoenix.Mediator.Mediator;
 
 public sealed class MediatorOptions
@@ -14,6 +16,16 @@ public enum EmptyResponseStatusCode
 internal static class MediatorMessages
 {
     public const string InvalidEmptyResponseStatusCode = "Empty response status code must be 200 OK or 204 No Content.";
+}
+
+internal sealed class MediatorOptionsValidator : IValidateOptions<MediatorOptions>
+{
+    public ValidateOptionsResult Validate(string? name, MediatorOptions options)
+    {
+        return options.EmptyResponseStatusCode is EmptyResponseStatusCode.Ok or EmptyResponseStatusCode.NoContent
+            ? ValidateOptionsResult.Success
+            : ValidateOptionsResult.Fail(MediatorMessages.InvalidEmptyResponseStatusCode);
+    }
 }
 
 /// <summary>

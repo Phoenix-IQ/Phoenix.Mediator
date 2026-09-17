@@ -1,5 +1,10 @@
 using System.Net;
+using System.Reflection;
 using System.Text.Json;
+#if NET9_0_OR_GREATER
+using System.Text.Json.Schema;
+#endif
+using System.Text.Json.Serialization.Metadata;
 using FluentValidation;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
@@ -7,11 +12,13 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Http.Metadata;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Phoenix.Mediator.Abstractions;
 using Phoenix.Mediator.Exceptions;
 using Phoenix.Mediator.Mediator;
@@ -21,6 +28,7 @@ using Phoenix.Mediator.Web;
 using Phoenix.Mediator.Web.Middlewares;
 using Phoenix.Mediator.Wrappers;
 using Xunit;
+using HttpJsonOptions = Microsoft.AspNetCore.Http.Json.JsonOptions;
 
 namespace Phoenix.Mediator.Tests;
 
@@ -53,6 +61,47 @@ public sealed class MediatorRegressionTests
     }
 
     [Fact]
+    public void AddMediator_ValidatesOptionsOnce_WhenCalledRepeatedly()
+    {
+        var services = new ServiceCollection();
+
+        services.AddMediator();
+        services.AddMediator(options => options.EmptyResponseStatusCode = (EmptyResponseStatusCode)201);
+
+        using var provider = services.BuildServiceProvider(validateScopes: true);
+
+        var exception = Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IOptions<MediatorOptions>>().Value);
+        var failure = Assert.Single(exception.Failures);
+        Assert.Contains("200 OK or 204 No Content", failure);
+    }
+
+    [Fact]
+    public void AddMediator_ResolvesSenderToTheScopedMediatorInstance()
+    {
+        var services = new ServiceCollection();
+        services.AddMediator();
+
+        using var provider = services.BuildServiceProvider(validateScopes: true);
+        using var scope = provider.CreateScope();
+
+        Assert.Same(
+            scope.ServiceProvider.GetRequiredService<global::Phoenix.Mediator.Mediator.Mediator>(),
+            scope.ServiceProvider.GetRequiredService<ISender>());
+    }
+
+    [Fact]
+    public void AddMediatorHandlers_RegistersLoadableHandlers_WhenSomeTypesFailToLoad()
+    {
+        var services = new ServiceCollection();
+
+        services.AddMediatorHandlers(new PartiallyLoadableAssembly(typeof(ValidatedRequestHandler)));
+
+        Assert.Contains(services, static descriptor =>
+            descriptor.ServiceType == typeof(IRequestHandler<ValidatedRequest, SingleResponse<string>>)
+            && descriptor.ImplementationType == typeof(ValidatedRequestHandler));
+    }
+
+    [Fact]
     public async Task MapEndpoints_DiscoversEndpointGroupsFromMediatorAssemblies()
     {
         await using var app = CreateApp();
@@ -79,6 +128,19 @@ public sealed class MediatorRegressionTests
         app.MapEndpoints();
 
         Assert.True(ScopedDependencyEndpoints.WasConstructed);
+    }
+
+    [Fact]
+    public async Task MapEndpoints_DisposesAsyncOnlyEndpointGroupDependencies()
+    {
+        AsyncDisposableDependencyEndpoints.Reset();
+
+        await using var app = CreateApp();
+
+        app.MapEndpoints();
+
+        var dependency = Assert.IsType<AsyncDisposableDependencyMarker>(AsyncDisposableDependencyEndpoints.LastDependency);
+        Assert.True(dependency.IsDisposed);
     }
 
     [Fact]
@@ -327,6 +389,70 @@ public sealed class MediatorRegressionTests
         Assert.Equal("x", result.Result);
     }
 
+    [Theory]
+    [InlineData(typeof(NonBodyMembersRequest))]
+    [InlineData(typeof(PositionalRouteBoundRequest))]
+    public void AddMediator_KeepsRouteQueryAndHeaderMembersOutOfJsonBody(Type requestType)
+    {
+        var serializerOptions = CreateHttpJsonSerializerOptions();
+
+        var request = Assert.IsAssignableFrom<IRouteIdRequest>(
+            JsonSerializer.Deserialize("""{"id":5,"force":true,"tenant":"t","name":"x"}""", requestType, serializerOptions));
+
+        Assert.Equal(0, request.Id);
+        Assert.Equal("x", request.Name);
+#if NET9_0_OR_GREATER
+        // Microsoft.AspNetCore.OpenApi (9+) builds request body schemas from these same serializer options.
+        var schemaProperties = JsonSchemaExporter.GetJsonSchemaAsNode(serializerOptions, requestType)["properties"]!
+            .AsObject()
+            .Select(static property => property.Key);
+        Assert.Equal(new[] { "name" }, schemaProperties);
+#endif
+    }
+
+    [Fact]
+    public void AddMediator_LeavesJsonBodyOfNonRequestTypesUnchanged()
+    {
+        var serializerOptions = CreateHttpJsonSerializerOptions();
+
+        var dto = JsonSerializer.Deserialize<RouteAttributedDto>("""{"id":5}""", serializerOptions);
+
+        Assert.Equal(5, dto!.Id);
+    }
+
+    [Fact]
+    public void AddMediator_KeepsRouteMembersOutOfJsonBody_WhenAppReplacesTheJsonResolver()
+    {
+        var serializerOptions = CreateHttpJsonSerializerOptions(static services =>
+            services.ConfigureHttpJsonOptions(static options => options.SerializerOptions.TypeInfoResolver = new DefaultJsonTypeInfoResolver()));
+
+        var request = JsonSerializer.Deserialize<PositionalRouteBoundRequest>("""{"id":5,"name":"x"}""", serializerOptions);
+
+        Assert.Equal(0, request!.Id);
+    }
+
+    [Fact]
+    public void AddMediator_KeepsRouteMembersOutOfJsonBody_WhenAppAddsToTheJsonResolverChain()
+    {
+        // Adding to the chain (as AddProblemDetails() does) makes TypeInfoResolver return the options' live chain.
+        var serializerOptions = CreateHttpJsonSerializerOptions(static services =>
+            services.ConfigureHttpJsonOptions(static options => options.SerializerOptions.TypeInfoResolverChain.Insert(0, new DefaultJsonTypeInfoResolver())));
+
+        var request = JsonSerializer.Deserialize<PositionalRouteBoundRequest>("""{"id":5,"name":"x"}""", serializerOptions);
+
+        Assert.Equal(0, request!.Id);
+    }
+
+    private static JsonSerializerOptions CreateHttpJsonSerializerOptions(Action<IServiceCollection>? configureServices = null)
+    {
+        var services = new ServiceCollection();
+        services.AddMediator();
+        configureServices?.Invoke(services);
+
+        using var provider = services.BuildServiceProvider();
+        return provider.GetRequiredService<IOptions<HttpJsonOptions>>().Value.SerializerOptions;
+    }
+
     private static void AssertStatusCode(int expectedStatusCode, IResult result)
     {
         var statusCodeResult = Assert.IsAssignableFrom<IStatusCodeHttpResult>(result);
@@ -344,6 +470,13 @@ public sealed class MediatorRegressionTests
 
         public void OnCompleted(Func<object, Task> callback, object state) { }
         public void OnStarting(Func<object, Task> callback, object state) { }
+    }
+
+    // Simulates an assembly where some types reference a dependency that isn't deployed.
+    private sealed class PartiallyLoadableAssembly(params Type[] loadableTypes) : Assembly
+    {
+        public override Type[] GetTypes()
+            => throw new ReflectionTypeLoadException([.. loadableTypes, null], [new TypeLoadException("Simulated missing dependency.")]);
     }
 
     private static IConfiguration CreateConfiguration(Dictionary<string, string?>? values = null)
@@ -390,6 +523,7 @@ public sealed class MediatorRegressionTests
         });
 
         builder.Services.AddScoped<ScopedDependencyMarker>();
+        builder.Services.AddScoped<AsyncDisposableDependencyMarker>();
         // OrderRequestHandler (discovered by the assembly scan) depends on this; register it so
         // Development-mode ValidateOnBuild can construct every handler.
         builder.Services.AddSingleton<ExecutionLog>();
@@ -483,6 +617,39 @@ public sealed class ScopedDependencyMarker
     public Guid InstanceId { get; } = Guid.NewGuid();
 }
 
+public sealed class AsyncDisposableDependencyEndpoints : BaseEndpointGroup
+{
+    public static AsyncDisposableDependencyMarker? LastDependency { get; private set; }
+
+    public AsyncDisposableDependencyEndpoints(AsyncDisposableDependencyMarker marker)
+    {
+        LastDependency = marker;
+    }
+
+    public static void Reset()
+    {
+        LastDependency = null;
+    }
+
+    public override void Map(WebApplication app)
+    {
+        app.MapGroup(GroupName)
+            .Get("ready", () => Results.Ok("ready"));
+    }
+}
+
+// Implements only IAsyncDisposable, which a synchronously disposed scope rejects.
+public sealed class AsyncDisposableDependencyMarker : IAsyncDisposable
+{
+    public bool IsDisposed { get; private set; }
+
+    public ValueTask DisposeAsync()
+    {
+        IsDisposed = true;
+        return ValueTask.CompletedTask;
+    }
+}
+
 public sealed class ExecutionLog
 {
     public List<string> Entries { get; } = [];
@@ -521,4 +688,33 @@ public sealed class SecondBehavior(ExecutionLog log) : IPipelineBehavior<OrderRe
         log.Entries.Add("second:after");
         return response;
     }
+}
+
+public interface IRouteIdRequest
+{
+    int Id { get; }
+    string? Name { get; }
+}
+
+public sealed record NonBodyMembersRequest : IRequest<SingleResponse<int>>, IRouteIdRequest
+{
+    [FromRoute]
+    public int Id { get; init; }
+
+    [FromQuery]
+    public bool Force { get; init; }
+
+    [FromHeader(Name = "X-Tenant")]
+    public string? Tenant { get; init; }
+
+    public string? Name { get; init; }
+}
+
+// The attribute lands on the constructor parameter, not the generated property.
+public sealed record PositionalRouteBoundRequest([FromRoute] int Id, string? Name) : IRequest, IRouteIdRequest;
+
+public sealed class RouteAttributedDto
+{
+    [FromRoute]
+    public int Id { get; set; }
 }

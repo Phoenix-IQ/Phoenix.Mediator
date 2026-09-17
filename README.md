@@ -8,7 +8,7 @@ support live in opt-in companion packages, so you only pull in what you use.
 It provides:
 - Request/handler abstractions (`IRequest`, `IRequest<TResponse>`, `IRequestHandler<...>`)
 - Endpoint-group discovery for Minimal APIs (`BaseEndpointGroup` + `MapEndpoints()`)
-- Consistent API result mapping (`ToApiResult()`) and error wrappers
+- Consistent API result mapping (`SendAsApiResult()`, `ToApiResult()`) and error wrappers
 - Opt-in pipeline behaviors (FluentValidation, Sentry) via companion packages
 - Opt-in Serilog/Sentry bootstrapping helpers via a companion package
 
@@ -118,7 +118,7 @@ public sealed class GreetingEndpoints : BaseEndpointGroup
     {
         app.MapGroup(GroupName)
             .Get("hello", async (ISender sender, [AsParameters] GetGreetingQuery query, CancellationToken ct) =>
-                (await sender.Send(query, ct)).ToApiResult());
+                await sender.SendAsApiResult(query, ct));
     }
 }
 ```
@@ -153,20 +153,30 @@ Or compose the pieces directly: `app.UsePhoenixExceptionHandling();`, `app.MapPh
 
 ## Sending requests
 
-Send a request through the mediator and map the result to an `IResult` with `ToApiResult()`:
+In endpoints, use `SendAsApiResult`. It sends the request through the mediator and maps the result to an `IResult` (see [Response and error behavior](#response-and-error-behavior)):
 
 ```csharp
-object? result = await sender.Send(request, cancellationToken);
-IResult apiResult = result.ToApiResult();
+IResult result = await sender.SendAsApiResult(request, cancellationToken);
 ```
 
-Note: the parameterless `ToApiResult()` maps a `null`/void result to `204 No Content` and does **not** consult `EmptyResponseStatusCode`. If you need the configured empty-response status for void requests, use `sender.SendAsApiResult(request, ct)` instead.
+Everywhere else (services, background jobs, tests), use `Send` to get the handler's response itself:
 
-`ISender.Send(...)` accepts either:
-- `IRequest<TResponse>`
-- `IRequest`
+```csharp
+// IRequest<TResponse>: pass both type arguments. C# can't infer TResponse, and without them
+// the call binds to the Send(object) overload, which returns object?.
+SingleResponse<string> greeting = await sender.Send<GetGreetingQuery, SingleResponse<string>>(query, cancellationToken);
+
+// IRequest (no response): returns a plain Task.
+await sender.Send(command, cancellationToken);
+```
+
+Avoid `(await sender.Send(...)).ToApiResult()` in endpoints:
+- `ToApiResult()` maps `null` to `204 No Content` without reading `EmptyResponseStatusCode`, but the [endpoint helpers](#endpoint-helpers) advertise the configured status in OpenAPI. With `EmptyResponseStatusCode.Ok`, the docs say `200` while the endpoint returns `204`.
+- For an `IRequest` (no response), `sender.Send(command, ct)` binds to the overload that returns a plain `Task`. There's no result to call `ToApiResult()` on, so the code doesn't compile.
 
 ## Response and error behavior
+
+Success responses come from `SendAsApiResult`. Errors come from the exception-handling middleware: `SendAsApiResult` doesn't catch exceptions, it lets them propagate. `MapEndpoints` registers the middleware by default; if you set `UseExceptionHandling = false`, call `app.UsePhoenixExceptionHandling()` yourself.
 
 - `IRequest<TResponse>`: returns JSON body (`200 OK`) on success
 - `IRequest` (no response): returns configured empty response status on success (`204 No Content` by default, or `200 OK`)
@@ -208,6 +218,28 @@ These helpers:
 - Add default OpenAPI responses (`401`, `403`, `400`, `500`)
 - Infer success response metadata from request type (`IRequest<T>` => `200`, `IRequest` => configured empty response status)
 - Allow explicit response metadata via `ResponseDto`
+
+## Route, query, and header members in body requests
+
+Minimal APIs bind a request like `UpdateStudentCommand` from the JSON body as a whole, and only honor `[FromRoute]`, `[FromQuery]`, and `[FromHeader]` on its members under `[AsParameters]`. On their own, those attributes do nothing here: a route `id` is still read from the body and shows up in the OpenAPI request schema.
+
+`AddMediator` keeps mediator-request members marked with those attributes out of the JSON body, so they aren't read from or written to it and the OpenAPI schema leaves them out. No `[JsonIgnore]` needed. Assign the value in the endpoint, and keep the parameter in the delegate so OpenAPI documents it:
+
+```csharp
+public record UpdateStudentCommand : IRequest<SingleResponse<int>>
+{
+    [FromRoute]
+    public int Id { get; init; }
+    public string? Name { get; init; }
+}
+
+group.Patch("{id}", (ISender sender, int id, UpdateStudentCommand command, CancellationToken ct) =>
+    sender.SendAsApiResult(command with { Id = id }, ct));
+```
+
+Positional records work the same way: `public record UpdateStudentCommand([FromRoute] int Id, string? Name) : IRequest<SingleResponse<int>>;`
+
+This only affects the Minimal API JSON options (`ConfigureHttpJsonOptions`). Serializing the request with other `JsonSerializerOptions`, for example in logs, still includes the member.
 
 ## Authorization
 

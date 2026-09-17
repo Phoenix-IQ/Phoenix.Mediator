@@ -1,14 +1,14 @@
-using Microsoft.AspNetCore.Http;
-
 namespace Phoenix.Mediator.Abstractions;
 
 public interface ISender
 {
     /// <summary>
-    /// Sends a request and returns either:
-    /// - the handler response value
-    /// - an <see cref="IResult"/> for no-content or error flows
-    /// Uses reflection to dispatch. Prefer the generic overloads when types are known at compile time.
+    /// Sends a request whose type is resolved at runtime and returns the handler's response,
+    /// or <c>null</c> for an <see cref="IRequest"/> (no response).
+    /// Exceptions from handlers and pipeline behaviors propagate to the caller; they are not returned.
+    /// Prefer the generic overloads when the request type is known at compile time: they avoid the runtime
+    /// lookup and boxing. For <see cref="IRequest{TResponse}"/>, pass both type arguments explicitly;
+    /// C# can't infer <c>TResponse</c>, so a call without them binds to this overload.
     /// </summary>
     Task<object?> Send(object request, CancellationToken cancellationToken = default);
 
