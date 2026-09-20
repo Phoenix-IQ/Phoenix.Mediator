@@ -10,9 +10,13 @@ public static class ValidationServiceCollectionExtensions
 {
     /// <summary>
     /// Adds the FluentValidation pipeline behavior to the mediator and registers all
-    /// validators found in the provided assemblies. Call after <c>AddMediator(...)</c>.
+    /// validators found in the provided assemblies, public and internal alike. Call after <c>AddMediator(...)</c>.
     /// Registering this before <c>AddMediatorSentry()</c> makes validation run outside the
     /// Sentry span; register it after to run inside. Safe to call multiple times.
+    /// <para>
+    /// Passing no assemblies registers the behavior only. Nothing is then validated unless the app registers
+    /// its <c>IValidator&lt;T&gt;</c> implementations itself, so pass the assemblies holding your validators.
+    /// </para>
     /// </summary>
     public static IServiceCollection AddMediatorValidation(this IServiceCollection services, params Assembly[] assemblies)
     {
@@ -26,7 +30,10 @@ public static class ValidationServiceCollectionExtensions
         {
             var newAssemblies = GetOrCreateRegistry(services).Add(assemblies.Distinct());
             foreach (var assembly in newAssemblies)
-                services.AddValidatorsFromAssembly(assembly);
+                // includeInternalTypes: handlers are discovered regardless of visibility, so validators
+                // must be too. Otherwise an `internal sealed` validator is silently never registered and
+                // its request is never validated.
+                services.AddValidatorsFromAssembly(assembly, includeInternalTypes: true);
         }
 
         return services;

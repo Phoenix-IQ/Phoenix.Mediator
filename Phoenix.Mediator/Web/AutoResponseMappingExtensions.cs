@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using System.Diagnostics;
 using Phoenix.Mediator.Abstractions;
 using Phoenix.Mediator.Mediator;
 using Phoenix.Mediator.Wrappers;
@@ -31,7 +32,8 @@ public static class AutoResponseMappingExtensions
         {
             null => CreateEmptyResponseResult(emptyResponseStatusCode),
             IResult result => result,
-            ErrorResponse errors => Results.Json(new ErrorsResponse(errors.Errors), statusCode: (int)errors.HttpStatusCode),
+            // Same body shape as the exception-handling middleware, trace id included.
+            ErrorResponse errors => Results.Json(new ErrorsResponse(errors.Errors, Activity.Current?.TraceId.ToString()), statusCode: (int)errors.HttpStatusCode),
             // Always return JSON so Swagger/clients consistently get the documented content-type/schema.
             _ => Results.Json(value)
         };
@@ -50,10 +52,9 @@ public static class AutoResponseMappingExtensions
     {
         var result = await sender.Send(request, cancellationToken).ConfigureAwait(false);
 
-        if (result is null && IsVoidRequest(request.GetType()))
-            return CreateEmptyResponseResult(GetConfiguredEmptyResponseStatusCode(sender));
-
-        return result.ToApiResult();
+        // A null result means "no body", whether the request was void or its handler returned null. Both
+        // honor the configured empty-response status, so the response matches what OpenAPI advertises.
+        return result.ToApiResult(GetConfiguredEmptyResponseStatusCode(sender));
     }
 
     /// <summary>
@@ -62,7 +63,7 @@ public static class AutoResponseMappingExtensions
     public static async Task<IResult> SendAsApiResult<TRequest, TResponse>(this ISender sender, TRequest request, CancellationToken cancellationToken = default) where TRequest : IRequest<TResponse>
     {
         var result = await sender.Send<TRequest, TResponse>(request, cancellationToken).ConfigureAwait(false);
-        return result.ToApiResult();
+        return result.ToApiResult(GetConfiguredEmptyResponseStatusCode(sender));
     }
 
     /// <summary>
@@ -91,10 +92,4 @@ public static class AutoResponseMappingExtensions
         };
     }
 
-    private static bool IsVoidRequest(Type type)
-    {
-        return typeof(IRequest).IsAssignableFrom(type) && !type
-            .GetInterfaces()
-            .Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IRequest<>));
-    }
 }

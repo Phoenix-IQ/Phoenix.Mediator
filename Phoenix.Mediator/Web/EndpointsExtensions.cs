@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http;
@@ -90,7 +91,9 @@ public static class EndpointsExtensions
         var endpointGroupType = typeof(BaseEndpointGroup);
         var endpointGroupTypes = GetEndpointAssemblies(app, assemblies)
             .SelectMany(assembly => GetLoadableTypes(assembly, app.Logger))
-            .Where(t => t.IsClass && !t.IsAbstract && endpointGroupType.IsAssignableFrom(t))
+            // Open generic groups (CrudEndpoints<TEntity>) can't be instantiated; skip them instead of
+            // failing the whole application at startup.
+            .Where(t => t.IsClass && !t.IsAbstract && !t.ContainsGenericParameters && endpointGroupType.IsAssignableFrom(t))
             .Distinct();
 
         foreach (var type in endpointGroupTypes)
@@ -304,34 +307,69 @@ public static class EndpointsExtensions
     // --------------------
     // POST MULTIPART
     // --------------------
-    public static RouteHandlerBuilder PostMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = DefaultMaxMultipartBodySize, int timeoutSeconds = DefaultMultipartTimeoutSeconds, bool disableAntiforgery = false, ResponseDto[]? responseDtos = null)
+    /// <summary>
+    /// Maps an endpoint that accepts <c>multipart/form-data</c>, with a body size limit, a request timeout,
+    /// and the default OpenAPI responses.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Antiforgery.</b> ASP.NET Core requires an antiforgery token for any endpoint whose delegate binds
+    /// form data (<c>IFormFile</c>, <c>IFormFileCollection</c>, <c>IFormCollection</c>, <c>[FromForm]</c>).
+    /// That needs <c>services.AddAntiforgery()</c> <b>and</b> <c>app.UseAntiforgery()</c>, plus clients sending
+    /// the token (<c>RequestVerificationToken</c> header or <c>__RequestVerificationToken</c> form field) with
+    /// the antiforgery cookie. Registering the services without the middleware is not enough. APIs authenticated
+    /// with bearer tokens rather than cookies should pass <paramref name="disableAntiforgery"/> as
+    /// <see langword="true"/>. A delegate that instead reads <c>HttpRequest.Form</c> itself is never validated,
+    /// whatever this flag says, because validation is enforced by form parameter binding.
+    /// </para>
+    /// <para>
+    /// <b>Timeout.</b> <paramref name="timeoutSeconds"/> only adds metadata. It is enforced only when the app
+    /// calls <c>services.AddRequestTimeouts()</c> and <c>app.UseRequestTimeouts()</c>, and it covers the whole
+    /// request, so a large upload over a slow connection can hit it.
+    /// </para>
+    /// </remarks>
+    /// <param name="builder">The route builder to map onto.</param>
+    /// <param name="pattern">The route pattern.</param>
+    /// <param name="handler">The endpoint delegate.</param>
+    /// <param name="maxRequestBodySize">Maximum request body size in bytes. Applied to both the server limit and the multipart form limit.</param>
+    /// <param name="timeoutSeconds">Request timeout in seconds; see the remarks about what enforces it.</param>
+    /// <param name="disableAntiforgery">Pass <see langword="true"/> to opt out of antiforgery validation; see the remarks.</param>
+    /// <param name="responseDtos">Explicit OpenAPI success responses; inferred from the mediator request type when omitted.</param>
+    public static RouteHandlerBuilder PostMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = DefaultMaxMultipartBodySize, int timeoutSeconds = DefaultMultipartTimeoutSeconds, bool disableAntiforgery = false, params ResponseDto[]? responseDtos)
     {
         return builder.MapPost(pattern, handler)
-            .ConfigureMultiPart(builder.ServiceProvider, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery, responseDtos);
+            .ConfigureMultiPart(builder.ServiceProvider, pattern, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery, responseDtos);
     }
 
     // --------------------
     // PUT MULTIPART
     // --------------------
-    public static RouteHandlerBuilder PutMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = DefaultMaxMultipartBodySize, int timeoutSeconds = DefaultMultipartTimeoutSeconds, bool disableAntiforgery = false, ResponseDto[]? responseDtos = null)
+    /// <inheritdoc cref="PostMultiPart"/>
+    public static RouteHandlerBuilder PutMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = DefaultMaxMultipartBodySize, int timeoutSeconds = DefaultMultipartTimeoutSeconds, bool disableAntiforgery = false, params ResponseDto[]? responseDtos)
     {
         return builder.MapPut(pattern, handler)
-            .ConfigureMultiPart(builder.ServiceProvider, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery, responseDtos);
+            .ConfigureMultiPart(builder.ServiceProvider, pattern, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery, responseDtos);
     }
 
-    public static RouteHandlerBuilder PatchMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = DefaultMaxMultipartBodySize, int timeoutSeconds = DefaultMultipartTimeoutSeconds, bool disableAntiforgery = false, ResponseDto[]? responseDtos = null)
+    /// <inheritdoc cref="PostMultiPart"/>
+    public static RouteHandlerBuilder PatchMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = DefaultMaxMultipartBodySize, int timeoutSeconds = DefaultMultipartTimeoutSeconds, bool disableAntiforgery = false, params ResponseDto[]? responseDtos)
     {
         return builder.MapPatch(pattern, handler)
-            .ConfigureMultiPart(builder.ServiceProvider, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery, responseDtos);
+            .ConfigureMultiPart(builder.ServiceProvider, pattern, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery, responseDtos);
     }
 
-    private static RouteHandlerBuilder ConfigureMultiPart(this RouteHandlerBuilder route, IServiceProvider services, Delegate handler, long maxRequestBodySize, int timeoutSeconds, bool disableAntiforgery, ResponseDto[]? responseDtos)
+    private static RouteHandlerBuilder ConfigureMultiPart(this RouteHandlerBuilder route, IServiceProvider services, string pattern, Delegate handler, long maxRequestBodySize, int timeoutSeconds, bool disableAntiforgery, ResponseDto[]? responseDtos)
     {
         route
             .AddResponses(services, handler, responseDtos)
-            .Accepts<IFormFile>("multipart/form-data")
             .Accepts<IFormFileCollection>("multipart/form-data")
             .WithMetadata(new RequestSizeLimitAttribute(maxRequestBodySize))
+            // The request size limit alone is not enough: form parsing has its own ceiling
+            // (FormOptions.MultipartBodyLengthLimit, 128 MB by default), so without this a
+            // maxRequestBodySize above that is rejected while parsing the form.
+            .WithFormOptions(multipartBodyLengthLimit: maxRequestBodySize)
+            // Only metadata: nothing enforces it unless the app calls AddRequestTimeouts() and
+            // app.UseRequestTimeouts().
             .WithRequestTimeout(TimeSpan.FromSeconds(timeoutSeconds));
 
         // Antiforgery validation stays ON by default. Only disable it when the caller
@@ -339,7 +377,45 @@ public static class EndpointsExtensions
         // so cookie-authenticated uploads are not silently exposed to CSRF.
         if (disableAntiforgery)
             route.DisableAntiforgery();
+        else
+            WarnIfAntiforgeryIsUnavailable(services, pattern, handler);
 
         return route;
+    }
+
+    /// <summary>
+    /// ASP.NET Core requires an antiforgery token for endpoints that bind form data. Without the antiforgery
+    /// services, such a request fails at runtime with a 500 whose cause is only visible in the log, so say so
+    /// while the routes are being built.
+    /// </summary>
+    private static void WarnIfAntiforgeryIsUnavailable(IServiceProvider services, string pattern, Delegate handler)
+    {
+        if (!BindsFormData(handler) || IsAntiforgeryRegistered(services))
+            return;
+
+        services.GetService<ILoggerFactory>()
+            ?.CreateLogger(typeof(EndpointsExtensions).FullName!)
+            .LogWarning(
+                "Endpoint '{Pattern}' binds form data, so ASP.NET Core requires antiforgery validation, but no antiforgery services are registered. " +
+                "Requests to it will fail with 500. Either call services.AddAntiforgery() and app.UseAntiforgery() and have clients send the token, " +
+                "or pass disableAntiforgery: true (typical for APIs authenticated with bearer tokens rather than cookies).",
+                pattern);
+    }
+
+    private static bool BindsFormData(Delegate handler)
+    {
+        return handler.Method.GetParameters().Any(static parameter =>
+            typeof(IFormFile).IsAssignableFrom(parameter.ParameterType)
+            || typeof(IFormFileCollection).IsAssignableFrom(parameter.ParameterType)
+            || typeof(IFormCollection).IsAssignableFrom(parameter.ParameterType)
+            || parameter.GetCustomAttributes(inherit: true).Any(static attribute => attribute is IFromFormMetadata));
+    }
+
+    private static bool IsAntiforgeryRegistered(IServiceProvider services)
+    {
+        // IServiceProviderIsService avoids constructing the service just to test for it.
+        return services.GetService<IServiceProviderIsService>() is { } isService
+            ? isService.IsService(typeof(IAntiforgery))
+            : services.GetService<IAntiforgery>() is not null;
     }
 }

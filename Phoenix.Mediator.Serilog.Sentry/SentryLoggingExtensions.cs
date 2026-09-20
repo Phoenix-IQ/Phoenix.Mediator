@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Serilog;
 using Serilog.Events;
+using System.Globalization;
 using System.Reflection;
 
 namespace Phoenix.Mediator.Serilog.Sentry;
@@ -41,7 +42,16 @@ public static class SentryLoggingExtensions
     /// Adds the Serilog → Sentry sink (errors as events, lower levels as breadcrumbs). Pass this to
     /// <c>AddLogging(configureSinks: lc =&gt; lc.WriteToSentry(builder.Configuration))</c>.
     /// </summary>
-    public static LoggerConfiguration WriteToSentry(this LoggerConfiguration loggerConfiguration, IConfiguration configuration)
+    /// <param name="loggerConfiguration">The Serilog configuration to add the sink to.</param>
+    /// <param name="configuration">Application configuration holding the <c>Sentry:*</c> values.</param>
+    /// <param name="initializeSdk">
+    /// Whether this sink initializes the Sentry SDK. The SDK must be initialized exactly once.
+    /// Pass <see langword="false"/> when the app also calls <see cref="AddSentry"/>, which initializes it
+    /// through the ASP.NET Core integration; otherwise both initialize it and one set of options
+    /// (<c>Environment</c> from <see cref="AddSentry"/>, <c>Release</c> here) is discarded.
+    /// Leave <see langword="true"/> when the Serilog sink is the only Sentry integration.
+    /// </param>
+    public static LoggerConfiguration WriteToSentry(this LoggerConfiguration loggerConfiguration, IConfiguration configuration, bool initializeSdk = true)
     {
         ArgumentNullException.ThrowIfNull(loggerConfiguration);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -50,6 +60,7 @@ public static class SentryLoggingExtensions
 
         loggerConfiguration.WriteTo.Sentry(o =>
         {
+            o.InitializeSdk = initializeSdk;
             o.Dsn = dsn;
             o.MinimumBreadcrumbLevel = LogEventLevel.Information;
             o.MinimumEventLevel = LogEventLevel.Error;
@@ -67,7 +78,10 @@ public static class SentryLoggingExtensions
     {
         var dsn = configuration["Sentry:Dsn"];
         var sendDefaultPii = bool.TryParse(configuration["Sentry:SendDefaultPii"], out var configuredPii) && configuredPii;
-        var tracesSampleRate = double.TryParse(configuration["Sentry:TracesSampleRate"], out var configuredRate)
+        // Invariant culture: configuration always stores "0.2", but a current-culture parse reads that as
+        // 2 where "," is the decimal separator (de-DE/tr-TR -> clamped to 1.0, tracing every request) and
+        // fails outright on cultures using another separator (ar-IQ/fr-FR -> the configured value is lost).
+        var tracesSampleRate = double.TryParse(configuration["Sentry:TracesSampleRate"], NumberStyles.Float, CultureInfo.InvariantCulture, out var configuredRate)
             ? Math.Clamp(configuredRate, 0.0, 1.0)
             : 0.1;
 

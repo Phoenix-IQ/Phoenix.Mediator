@@ -82,6 +82,15 @@ internal sealed class RequestBodyJsonOptionsSetup : IPostConfigureOptions<JsonOp
         property.Get = null;
         property.Set = null;
         property.IsRequired = false;
+#if NET9_0_OR_GREATER
+        // The discarding converter below hands back default, i.e. null for a reference type. With
+        // RespectNullableAnnotations that would be rejected for a non-nullable member ("the constructor
+        // parameter 'Slug' doesn't allow null values"), turning a member the client shouldn't have sent
+        // into a 400. The value is thrown away either way, so allow null on the way in. Only types that
+        // can hold null accept this; for the rest (int, Guid, ...) default is never null anyway.
+        if (!property.PropertyType.IsValueType || Nullable.GetUnderlyingType(property.PropertyType) is not null)
+            property.IsSetNullable = true;
+#endif
         // A constructor parameter still reads its matching JSON value when the property has no setter; discard it.
         property.CustomConverter = (JsonConverter)Activator.CreateInstance(
             typeof(DiscardValueConverter<>).MakeGenericType(property.PropertyType))!;

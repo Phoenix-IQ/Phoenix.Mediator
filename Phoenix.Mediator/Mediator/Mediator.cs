@@ -25,13 +25,26 @@ public sealed class Mediator(IServiceProvider serviceProvider, IOptions<Mediator
     public Task<TResponse> Send<TRequest, TResponse>(TRequest request, CancellationToken cancellationToken = default)
         where TRequest : IRequest<TResponse>
     {
-        return SendInternal<TRequest, TResponse>(request, cancellationToken);
+        // A variable declared as IRequest<TResponse> binds here with TRequest = the interface, and no
+        // handler is registered for an interface. Dispatch those by the runtime type instead of failing.
+        return typeof(TRequest).IsInterface
+            ? SendByRuntimeType<TResponse>(request!, cancellationToken)
+            : SendInternal<TRequest, TResponse>(request, cancellationToken);
     }
 
     public Task Send<TRequest>(TRequest request, CancellationToken cancellationToken = default)
         where TRequest : IRequest
     {
-        return SendInternalVoid(request, cancellationToken);
+        // Same for `IRequest command = new SomeCommand();` — common when commands are dispatched
+        // polymorphically (a List<IRequest>, a factory return value, ...).
+        return typeof(TRequest).IsInterface
+            ? Send((object)request!, cancellationToken)
+            : SendInternalVoid(request, cancellationToken);
+    }
+
+    private async Task<TResponse> SendByRuntimeType<TResponse>(object request, CancellationToken cancellationToken)
+    {
+        return (TResponse)(await Send(request, cancellationToken).ConfigureAwait(false))!;
     }
 
     private static RequestHandlerWrapper CreateWrapper(Type requestType)

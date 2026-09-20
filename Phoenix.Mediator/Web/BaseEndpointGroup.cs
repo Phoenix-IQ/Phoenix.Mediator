@@ -19,9 +19,24 @@ namespace Phoenix.Mediator.Web;
 public abstract class BaseEndpointGroup
 {
     /// <summary>
-    /// Name used for grouping Swagger documentation.
+    /// Name used for grouping Swagger documentation, and commonly as the route prefix
+    /// (<c>app.MapGroup(GroupName)</c>). Lower-casing is culture-invariant on purpose: with
+    /// <c>ToLower()</c> a Turkish/Azerbaijani server turns <c>InvoiceEndpoints</c> into
+    /// <c>ınvoice</c> (dotless i) and serves different URLs than every other machine.
     /// </summary>
-    public virtual string GroupName => GetType().Name.Replace("Endpoints", "").ToLower();
+    public virtual string GroupName
+    {
+        get
+        {
+            const string suffix = "Endpoints";
+            var name = GetType().Name;
+
+            if (name.Length > suffix.Length && name.EndsWith(suffix, StringComparison.Ordinal))
+                name = name[..^suffix.Length];
+
+            return name.ToLowerInvariant();
+        }
+    }
 
     /// <summary>
     /// Override to map all endpoints for this group.

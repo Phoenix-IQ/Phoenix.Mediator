@@ -219,6 +219,37 @@ These helpers:
 - Infer success response metadata from request type (`IRequest<T>` => `200`, `IRequest` => configured empty response status)
 - Allow explicit response metadata via `ResponseDto`
 
+## File uploads (multipart)
+
+`PostMultiPart` / `PutMultiPart` / `PatchMultiPart` map the route and add a body size limit (5 MB by default,
+applied to both the server limit and the multipart form limit), a request timeout (120 s by default), and the
+default OpenAPI responses.
+
+```csharp
+group.PostMultiPart("documents", async (ISender sender, [FromForm] UploadDocumentCommand command, CancellationToken ct) =>
+    await sender.SendAsApiResult(command, ct), disableAntiforgery: true);
+```
+
+Two things decide whether these endpoints work, and neither is specific to this package:
+
+**Antiforgery.** ASP.NET Core requires an antiforgery token for *any* endpoint whose delegate binds form data
+(`IFormFile`, `IFormFileCollection`, `IFormCollection`, `[FromForm]`). Pick one:
+
+- **APIs authenticated with bearer tokens** (no cookies): pass `disableAntiforgery: true`. Cookies are what CSRF
+  abuses, so there is nothing to protect here.
+- **Cookie-authenticated apps**: call `services.AddAntiforgery()` **and** `app.UseAntiforgery()`, expose the token
+  (`IAntiforgery.GetAndStoreTokens(httpContext)`), and have clients send it in the `RequestVerificationToken` header
+  (or the `__RequestVerificationToken` form field) along with the antiforgery cookie. Registering the services
+  without the middleware is not enough: requests then fail with a 500 whose cause is only in the log. The helpers
+  log a warning at startup when the services are missing entirely.
+
+A delegate that reads `HttpRequest.Form` itself is never validated, whatever `disableAntiforgery` says, because
+validation is enforced by form parameter binding. Validate such endpoints yourself with `IAntiforgery`.
+
+**Timeouts.** `timeoutSeconds` only adds metadata. It is enforced only if the app calls
+`services.AddRequestTimeouts()` and `app.UseRequestTimeouts()`, and it covers the whole request, so a large upload
+over a slow connection can hit it.
+
 ## Route, query, and header members in body requests
 
 Minimal APIs bind a request like `UpdateStudentCommand` from the JSON body as a whole, and only honor `[FromRoute]`, `[FromQuery]`, and `[FromHeader]` on its members under `[AsParameters]`. On their own, those attributes do nothing here: a route `id` is still read from the body and shows up in the OpenAPI request schema.
@@ -239,7 +270,36 @@ group.Patch("{id}", (ISender sender, int id, UpdateStudentCommand command, Cance
 
 Positional records work the same way: `public record UpdateStudentCommand([FromRoute] int Id, string? Name) : IRequest<SingleResponse<int>>;`
 
+**The endpoint must assign the value.** An excluded member is always `default` after body binding, so a forgotten
+`with { Id = id }` means the handler silently gets `0`/`Guid.Empty`/`null`. The request therefore needs a shape you
+can still write to:
+
+| Request shape | Assigning the route value |
+|---|---|
+| `record` with `{ get; init; }`, or a positional `record` | `command with { Id = id }` |
+| `class` with `{ get; set; }` | `command.Id = id;` |
+| `class` with `{ get; init; }`, or get-only properties set by a constructor | **not possible** — use a record or a settable property |
+
+Two limits to keep in mind:
+
+- **Only the JSON body is filtered.** A request bound from a form (`[FromForm]`, the multipart helpers) still reads
+  those members from the form fields, so a caller can post `Id=999` to `/students/5`. In form endpoints, assign the
+  route value after binding, or read it from the route parameter instead of the command.
+- **OpenAPI support depends on the generator.** `Microsoft.AspNetCore.OpenApi` (.NET 9+) builds schemas from the same
+  JSON contract and leaves these members out. Swashbuckle builds schemas by reflection and still shows them; add a
+  schema filter there if the published schema matters.
+
 This only affects the Minimal API JSON options (`ConfigureHttpJsonOptions`). Serializing the request with other `JsonSerializerOptions`, for example in logs, still includes the member.
+
+Alternatively, let ASP.NET Core bind everything and skip the manual assignment. This works for classes and records
+alike, and every OpenAPI generator documents it correctly:
+
+```csharp
+public record UpdateStudentCommand([FromRoute] int Id, [FromBody] UpdateStudentBody Body) : IRequest<SingleResponse<int>>;
+
+group.Patch("{id}", (ISender sender, [AsParameters] UpdateStudentCommand command, CancellationToken ct) =>
+    sender.SendAsApiResult(command, ct));
+```
 
 ## Authorization
 
@@ -273,7 +333,24 @@ public sealed class AdminEndpoints : BaseEndpointGroup
 ```
 
 Notes:
-- Multiple roles are **OR**-combined (matches ASP.NET Core's `AuthorizeAttribute.Roles` semantics).
+- Multiple roles **in one call** are **OR**-combined (matches ASP.NET Core's `AuthorizeAttribute.Roles` semantics).
+  Calling it more than once — on the group and again on the endpoint, for example — is **AND**: each call adds its
+  own requirement, so the caller must be in a role from every call.
+- Role matching is **case-sensitive**, and the enum member name is the claim value. When your identity provider
+  issues a different spelling, map it with `[EnumMember]`:
+  ```csharp
+  public enum AppRole
+  {
+      Admin,
+      [EnumMember(Value = "super-admin")] SuperAdmin,   // claim value: "super-admin"
+  }
+  ```
+- Roles are matched against claims of the identity's role claim type (`ClaimTypes.Role` by default). With JWT
+  bearer tokens carrying a `"role"`/`"roles"` claim and `MapInboundClaims = false`, set
+  `TokenValidationParameters.RoleClaimType` to match, or every check fails with `403`. Providers that nest roles
+  (Keycloak's `realm_access.roles`) need a claims transformation first.
+- `[Flags]` combinations (`AppRole.Admin | AppRole.Manager`) and undefined values are rejected with an
+  `ArgumentException` at startup: a combination is ambiguous — pass the roles as separate arguments for OR.
 - Calling `RequireRole<TBuilder, TRole>()` with no roles is equivalent to `RequireAuthorization()`
   (any authenticated user). For that case, prefer `RequireAuthorization()` directly — type inference
   can't pick `TRole` from an empty argument list.
@@ -291,7 +368,7 @@ Validation failures are returned as `400` with the `errors` response body.
 Install `Phoenix.Mediator.Serilog` (Serilog only, no Sentry dependency):
 
 ```csharp
-using Phoenix.Mediator.Extensions;
+using Phoenix.Mediator.Serilog;
 
 builder.AddLogging();
 var app = builder.Build();
@@ -301,11 +378,16 @@ app.UsePhoenixRequestLogEnrichment();
 To also send events to Sentry, install `Phoenix.Mediator.Serilog.Sentry` and compose the add-on:
 
 ```csharp
-using Phoenix.Mediator.Extensions;
+using Phoenix.Mediator.Serilog;
+using Phoenix.Mediator.Serilog.Sentry;
 
 builder.AddSentry(); // Sentry ASP.NET integration (error capture + tracing + IHub)
-builder.AddLogging(configureSinks: lc => lc.WriteToSentry(builder.Configuration)); // Serilog → Sentry sink
+// initializeSdk: false — AddSentry() already initialized the SDK, and it must be initialized exactly once.
+builder.AddLogging(configureSinks: lc => lc.WriteToSentry(builder.Configuration, initializeSdk: false));
 ```
+
+Using the Serilog sink on its own (without `AddSentry()`)? Leave `initializeSdk` at its default, so the sink
+initializes the SDK.
 
 File logging is on by default (rolling files under `{ContentRoot}/logs`). For containerized or horizontally-scaled deployments, disable it and rely on stdout collection:
 
@@ -314,5 +396,37 @@ builder.AddLogging(enableFileLogging: false);
 ```
 
 Sentry PII remains disabled unless you explicitly set `Sentry:SendDefaultPii=true`. Client-IP log enrichment is also off unless PII is enabled (or you pass `app.UsePhoenixRequestLogEnrichment(logClientIp: true)`); the trace id is always enriched.
+
+## Upgrading
+
+### Behavior changes after 2.0.6
+
+- **Duplicate handlers now fail at startup.** Two handlers for the same request used to be resolved by scan order,
+  silently. `AddMediator`/`AddMediatorHandlers` now throw and name both types. Register the one you want explicitly
+  before the scan if you need to override a handler.
+- **`RequireRole` rejects `[Flags]` combinations and undefined enum values** with an `ArgumentException` at startup.
+  Pass roles as separate arguments for OR semantics.
+- **Cancelled requests are no longer turned into `500`.** The exception-handling middleware rethrows cancellation
+  when the request was aborted, so `UseRequestTimeouts` can write its `504` and client disconnects stop filling the
+  error log.
+- **Framework bad requests keep their status code.** Malformed JSON, missing required parameters, invalid
+  antiforgery tokens and oversized forms return their real status (`400`, `413`, ...) with the standard
+  `{"errors":[...],"traceId":"..."}` body, instead of `500` in Development.
+- **`UnauthorizedAccessException` is logged** (still mapped to `401`). .NET throws it for file-permission errors too,
+  so it should never pass silently.
+- **`MultiResponse<T>`** takes an `IReadOnlyList<T>` in its constructor and exposes `PageSize`, so it can be
+  deserialized (`ReadFromJsonAsync<MultiResponse<T>>`) as well as serialized. Existing `new MultiResponse<T>(list, …)`
+  calls keep compiling.
+- **`WriteToSentry(configuration)`** takes an optional `initializeSdk` parameter; pass `false` when the app also
+  calls `AddSentry()`.
+- **`BaseEndpointGroup.GroupName`** lower-cases with the invariant culture, so Turkish/Azerbaijani servers no longer
+  produce `ınvoice` route prefixes.
+
+### 2.0.6
+
+`AddMediator` began excluding mediator-request members marked `[FromRoute]`/`[FromQuery]`/`[FromHeader]` from the
+JSON body. If an app previously relied on those values arriving in the body, they now arrive as `default` — assign
+them in the endpoint, as shown in
+[Route, query, and header members in body requests](#route-query-and-header-members-in-body-requests).
 
 

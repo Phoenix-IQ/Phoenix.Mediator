@@ -31,6 +31,18 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
         {
             await HandleHttpResponseException(context, ex);
         }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        {
+            // The client disconnected, or a request timeout fired. Neither is a server fault: reporting it
+            // as a 500 error hides the 504 that UseRequestTimeouts writes when it sees the exception, and
+            // fills the error log on every aborted request. Let it flow to whoever is waiting for it.
+            logger.LogDebug("Request cancelled for {Method} {Path}", context.Request.Method, context.Request.Path);
+            throw;
+        }
+        catch (BadHttpRequestException ex)
+        {
+            await HandleBadHttpRequestException(context, ex);
+        }
         catch (UnauthorizedAccessException ex)
         {
             await HandleUnauthorizedException(context, ex);
@@ -39,6 +51,40 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
         {
             await HandleUnhandledException(context, ex);
         }
+    }
+
+    /// <summary>
+    /// Bad requests reported by the framework: malformed JSON, a missing required parameter, an invalid
+    /// antiforgery token, or a form/body over the limit. ASP.NET Core throws these when
+    /// <c>RouteHandlerOptions.ThrowOnBadRequest</c> is enabled, which is the default in Development.
+    /// The status code it chose (400, 413, 415, ...) is kept instead of reporting the caller's mistake as a 500.
+    /// </summary>
+    private async Task HandleBadHttpRequestException(HttpContext context, BadHttpRequestException exception)
+    {
+        logger.LogWarning(exception,
+            "Bad request for {Method} {Path}",
+            context.Request.Method,
+            context.Request.Path);
+
+        if (!TryResetResponse(context, exception))
+            return;
+
+        context.Response.ContentType = "application/json";
+        context.Response.StatusCode = exception.StatusCode;
+
+        // A 4xx message describes what was wrong with the request itself, so it is useful to the caller.
+        // Anything else stays generic.
+        var message = exception.StatusCode is >= 400 and < 500
+            ? exception.Message
+            : GetUnknownErrorMessage(context);
+
+        var json = JsonSerializer.Serialize(new
+        {
+            errors = new[] { message },
+            traceId = GetTraceId(context)
+        });
+
+        await context.Response.WriteAsync(json);
     }
 
     private async Task HandleHttpResponseException(HttpContext context, HttpResponseException exception)
@@ -65,6 +111,14 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
 
     private Task HandleUnauthorizedException(HttpContext context, Exception exception)
     {
+        // Logged because .NET throws UnauthorizedAccessException for file-system permission errors too
+        // (saving an upload, for example). Without this, a broken directory permission looks like an
+        // authentication failure to the client and leaves nothing behind on the server.
+        logger.LogWarning(exception,
+            "UnauthorizedAccessException for {Method} {Path}; responding 401",
+            context.Request.Method,
+            context.Request.Path);
+
         if (!TryResetResponse(context, exception))
             return Task.CompletedTask;
 

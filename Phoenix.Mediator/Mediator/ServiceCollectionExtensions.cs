@@ -88,7 +88,17 @@ public static class ServiceCollectionExtensions
 
     /// <summary>
     /// Scans assemblies for IRequestHandler&lt;TRequest&gt; and IRequestHandler&lt;TRequest,TResponse&gt; implementations and registers them.
+    /// <para>
+    /// Open generic handlers (e.g. <c>GetByIdHandler&lt;TEntity&gt;</c>) are skipped: the service type would be a
+    /// partially open interface, which the DI container rejects at <c>BuildServiceProvider</c>. Register a closed
+    /// handler per request type instead.
+    /// </para>
+    /// <para>
+    /// Only assemblies passed to <c>AddMediator(...)</c> (or to <c>MapEndpoints(...)</c>) are scanned for
+    /// endpoint groups. Registering handlers through this method alone does not make its endpoint groups discoverable.
+    /// </para>
     /// </summary>
+    /// <exception cref="InvalidOperationException">Two handlers in the scanned assemblies handle the same request type.</exception>
     public static IServiceCollection AddMediatorHandlers(this IServiceCollection services, params Assembly[] assemblies)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -96,11 +106,15 @@ public static class ServiceCollectionExtensions
         if (assemblies is null || assemblies.Length == 0)
             throw new ArgumentException("At least one assembly must be provided.", nameof(assemblies));
 
+        // Tracks what this scan registered, so two handlers for one request fail loudly instead of
+        // TryAdd silently keeping whichever type the reflection order happened to yield first.
+        var registeredByScan = new Dictionary<Type, Type>();
+
         foreach (var assembly in assemblies.Distinct())
         {
             foreach (var type in AssemblyTypeLoader.GetLoadableTypes(assembly))
             {
-                if (!type.IsClass || type.IsAbstract)
+                if (!type.IsClass || type.IsAbstract || type.ContainsGenericParameters)
                     continue;
 
                 var interfaces = type.GetInterfaces();
@@ -112,6 +126,14 @@ public static class ServiceCollectionExtensions
                     var def = it.GetGenericTypeDefinition();
                     if (def == typeof(IRequestHandler<,>) || def == typeof(IRequestHandler<>))
                     {
+                        if (registeredByScan.TryGetValue(it, out var alreadyRegistered) && alreadyRegistered != type)
+                        {
+                            throw new InvalidOperationException(
+                                $"Multiple handlers implement '{it}': '{alreadyRegistered.FullName}' and '{type.FullName}'. " +
+                                "Remove one, or register the handler you want explicitly before calling AddMediator/AddMediatorHandlers.");
+                        }
+
+                        registeredByScan[it] = type;
                         services.TryAddTransient(it, type);
                     }
                 }

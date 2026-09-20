@@ -118,11 +118,15 @@ public static class LoggingExtensions
         if (logsDir is null)
             return;
 
+        // rollOnFileSizeLimit is required: without it Serilog stops writing once a file reaches
+        // fileSizeLimitBytes and silently drops every later event until the next daily roll.
+        // With it, the file rolls to log-20260917_001.log and nothing is lost.
         loggerConfig.WriteTo.File(
             path: Path.Combine(logsDir, "log-.log"),
             rollingInterval: RollingInterval.Day,
             retainedFileCountLimit: 14,
             fileSizeLimitBytes: 50_000_000,
+            rollOnFileSizeLimit: true,
             shared: true);
 
         loggerConfig.WriteTo.File(
@@ -130,6 +134,7 @@ public static class LoggingExtensions
             rollingInterval: RollingInterval.Day,
             retainedFileCountLimit: 30,
             fileSizeLimitBytes: 50_000_000,
+            rollOnFileSizeLimit: true,
             shared: true,
             restrictedToMinimumLevel: LogEventLevel.Warning);
 
@@ -141,6 +146,7 @@ public static class LoggingExtensions
                 rollingInterval: RollingInterval.Day,
                 retainedFileCountLimit: 30,
                 fileSizeLimitBytes: 50_000_000,
+                rollOnFileSizeLimit: true,
                 shared: true));
     }
 
