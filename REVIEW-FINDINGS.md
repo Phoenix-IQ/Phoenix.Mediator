@@ -61,7 +61,7 @@ Status as of 2026-09-17, after the fix pass described in [Fix status](#fix-statu
 | 26 | Low-Medium | Wrappers | `MultiResponse<T>` cannot be deserialized | **Fixed** |
 | 27 | Low | Web | `GroupName` uses culture-sensitive `ToLower()` (Turkish `ınvoice` routes) | **Fixed** |
 | 28 | Low | Web | Null `IRequest<T>` result returns 204 even when 200 is configured; error schema lacks `traceId` | **Fixed** |
-| 29 | **High** | Process | CI never runs: workflow triggers on `main`, default branch is `master` | **Fixed** |
+| 29 | **High** | Process | CI never runs: workflow triggers on `main`, default branch is `master` | **Fixed** (pull requests only) |
 | 30 | Low | Docs | README logging snippets use a namespace that does not exist | **Fixed** |
 | 31 | Low | Architecture | Core package forces ASP.NET Core onto projects that only need `IRequest` | **Not fixed** (package split) |
 
@@ -712,7 +712,9 @@ on:
 
 The default branch is `master` (`origin/HEAD -> origin/master`), and no `main` branch exists. Pushes and pull requests never trigger CI; tests only run inside `release.yml` when a `v*` tag is pushed.
 
-**Suggested fix:** `branches: ["master"]` for both triggers.
+**Fixed as:** `pull_request` on `master`, plus a manual `workflow_dispatch` button. There is deliberately **no push
+trigger**, to keep runner minutes down, and `release.yml` no longer runs tests either — so nothing tests a release
+automatically. Run `dotnet test Phoenix.Mediator.slnx -c Release` locally before tagging.
 
 #### Finding 30 — Low: README logging snippets use a namespace that does not exist
 

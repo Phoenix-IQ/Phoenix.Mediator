@@ -1,10 +1,11 @@
 name: CI
 
+# Pull requests only: no runner on every push to master. workflow_dispatch never fires on its own,
+# it just leaves a "Run workflow" button for when you want a check without opening a PR.
 on:
-  push:
-    branches: ["master"]
   pull_request:
     branches: ["master"]
+  workflow_dispatch:
 
 jobs:
   build:

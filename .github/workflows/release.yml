@@ -31,9 +31,8 @@ jobs:
       - name: Restore
         run: dotnet restore Phoenix.Mediator.slnx
 
-      - name: Test
-        run: dotnet test Phoenix.Mediator.slnx -c Release
-
+      # No test step: releasing should not pay for a second test run. Tests run on pull requests (ci.yml),
+      # so run `dotnet test Phoenix.Mediator.slnx -c Release` locally before tagging.
       - name: Pack
         run: >
           dotnet pack Phoenix.Mediator.slnx
