@@ -15,4 +15,14 @@ public sealed class MapEndpointsOptions
 
     /// <summary>Route pattern for the health endpoint. Default <c>/health</c>.</summary>
     public string HealthCheckPattern { get; set; } = "/health";
+
+    /// <summary>
+    /// What to do when the same route and HTTP method is mapped more than once. Default
+    /// <see cref="DuplicateEndpointHandling.Throw"/>: routing itself accepts such a mapping and only
+    /// fails once a request matches both endpoints, so the mistake would otherwise show up as a 500
+    /// the first time someone calls the route. Only endpoints mapped before <c>MapEndpoints</c>
+    /// returns are checked; call <see cref="EndpointsExtensions.ValidateNoDuplicateEndpoints"/> after
+    /// mapping the rest if you map endpoints outside endpoint groups.
+    /// </summary>
+    public DuplicateEndpointHandling DuplicateEndpointHandling { get; set; } = DuplicateEndpointHandling.Throw;
 }

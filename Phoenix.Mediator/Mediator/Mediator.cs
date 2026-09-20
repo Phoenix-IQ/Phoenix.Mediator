@@ -49,13 +49,10 @@ public sealed class Mediator(IServiceProvider serviceProvider, IOptions<Mediator
 
     private static RequestHandlerWrapper CreateWrapper(Type requestType)
     {
-        var genericIRequest = requestType
-            .GetInterfaces()
-            .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IRequest<>));
+        var responseType = MediatorRequestTypes.GetResponseType(requestType);
 
-        if (genericIRequest is not null)
+        if (responseType is not null)
         {
-            var responseType = genericIRequest.GetGenericArguments()[0];
             var wrapperType = typeof(RequestResponseWrapper<,>).MakeGenericType(requestType, responseType);
             return (RequestHandlerWrapper)Activator.CreateInstance(wrapperType)!;
         }

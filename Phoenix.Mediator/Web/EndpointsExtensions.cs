@@ -47,6 +47,42 @@ public static class EndpointsExtensions
             app.MapPhoenixHealthChecks(options.HealthCheckPattern);
 
         MapEndpointGroups(app, assemblies);
+        app.ValidateNoDuplicateEndpoints(options.DuplicateEndpointHandling);
+        return app;
+    }
+
+    /// <summary>
+    /// Reports routes that are mapped more than once with the same HTTP method. Routing accepts such
+    /// a mapping and throws <c>AmbiguousMatchException</c> (a 500) only when a request first matches
+    /// both endpoints, so this turns a duplicate introduced by mistake into a startup failure.
+    /// <see cref="MapEndpoints(WebApplication, MapEndpointsOptions, Assembly[])"/> calls this for you;
+    /// call it again yourself after mapping any endpoints that come later.
+    /// </summary>
+    /// <param name="app">The application whose mapped endpoints are inspected.</param>
+    /// <param name="handling">Throw (default), log a warning, or skip the check.</param>
+    /// <exception cref="DuplicateEndpointException">
+    /// A route is mapped more than once and <paramref name="handling"/> is
+    /// <see cref="DuplicateEndpointHandling.Throw"/>.
+    /// </exception>
+    public static WebApplication ValidateNoDuplicateEndpoints(this WebApplication app, DuplicateEndpointHandling handling = DuplicateEndpointHandling.Throw)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+
+        if (handling == DuplicateEndpointHandling.None)
+            return app;
+
+        var duplicates = DuplicateEndpointDetector.Find(((IEndpointRouteBuilder)app).DataSources);
+        if (duplicates.Count == 0)
+            return app;
+
+        var report = DuplicateEndpointDetector.BuildMessage(duplicates);
+
+        if (handling == DuplicateEndpointHandling.Throw)
+            throw new DuplicateEndpointException(report, duplicates.Select(duplicate => duplicate.Describe()));
+
+        // Route patterns contain braces, so the report goes in as an argument rather than as the
+        // message template, which would otherwise be parsed as (malformed) placeholders.
+        app.Logger.LogWarning("{DuplicateEndpointReport}", report);
         return app;
     }
 
@@ -218,46 +254,28 @@ public static class EndpointsExtensions
         var requestType = endpointHandler.Method
             .GetParameters()
             .Select(p => p.ParameterType)
-            .FirstOrDefault(IsMediatorRequestType);
+            .FirstOrDefault(MediatorRequestTypes.IsRequestOrRequestInterface);
 
         if (requestType is null)
             return null;
 
-        var genericIRequest = requestType
-            .GetInterfaces()
-            .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IRequest<>));
+        // Only two outcomes are possible here, because IsRequestOrRequestInterface above accepted this type
+        // for exactly one of two reasons: it has a response type, or it is an IRequest with none. The two
+        // questions have to be answered by the same helper — when they were asked separately, a parameter
+        // declared as the IRequest<TResponse> interface passed the first check and failed the second, and the
+        // endpoint silently advertised no success response at all.
+        var responseType = MediatorRequestTypes.GetDeclaredResponseType(requestType);
 
-        if (genericIRequest is not null)
-        {
-            var responseType = genericIRequest.GetGenericArguments()[0];
-            // IMPORTANT: do NOT advertise 204 for response requests; Swagger would show 200+204 even when you always return a body.
-            return [new ResponseDto(200, responseType)];
-        }
-
-        if (typeof(IRequest).IsAssignableFrom(requestType))
-        {
-            return [new ResponseDto((int)emptyResponseStatusCode, null)];
-        }
-
-        return null;
+        // IMPORTANT: do NOT advertise 204 for response requests; Swagger would show 200+204 even when you always return a body.
+        return responseType is not null
+            ? [new ResponseDto(200, responseType)]
+            : [new ResponseDto((int)emptyResponseStatusCode, null)];
     }
 
     private static EmptyResponseStatusCode GetConfiguredEmptyResponseStatusCode(IServiceProvider services)
     {
         return services.GetService<IOptions<MediatorOptions>>()?.Value.EmptyResponseStatusCode
             ?? EmptyResponseStatusCode.NoContent;
-    }
-
-    private static bool IsMediatorRequestType(Type t)
-    {
-        if (t is null) return false;
-        if (t == typeof(IRequest) || (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(IRequest<>)))
-            return true;
-
-        if (typeof(IRequest).IsAssignableFrom(t))
-            return true;
-
-        return t.GetInterfaces().Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IRequest<>));
     }
 
     // --------------------

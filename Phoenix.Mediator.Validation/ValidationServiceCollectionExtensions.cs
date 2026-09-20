@@ -1,6 +1,7 @@
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Phoenix.Mediator.Abstractions;
 using System.Reflection;
 
@@ -17,6 +18,11 @@ public static class ValidationServiceCollectionExtensions
     /// Passing no assemblies registers the behavior only. Nothing is then validated unless the app registers
     /// its <c>IValidator&lt;T&gt;</c> implementations itself, so pass the assemblies holding your validators.
     /// </para>
+    /// <para>
+    /// A validator that can never run — none found at all, unbound type parameters, no public constructor —
+    /// is reported as a warning at host startup rather than failing silently. See
+    /// <c>ValidatorRegistrationDiagnostics</c>.
+    /// </para>
     /// </summary>
     public static IServiceCollection AddMediatorValidation(this IServiceCollection services, params Assembly[] assemblies)
     {
@@ -25,10 +31,14 @@ public static class ValidationServiceCollectionExtensions
 
         services.TryAddEnumerable(ServiceDescriptor.Transient(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>)));
         services.TryAddEnumerable(ServiceDescriptor.Transient(typeof(IPipelineBehavior<>), typeof(ValidationBehavior<>)));
+        // Deduplicated by implementation type, so repeated AddMediatorValidation calls report once.
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, ValidatorRegistrationDiagnostics>());
+
+        var registry = GetOrCreateRegistry(services);
 
         if (assemblies.Length > 0)
         {
-            var newAssemblies = GetOrCreateRegistry(services).Add(assemblies.Distinct());
+            var newAssemblies = registry.Add(assemblies.Distinct());
             foreach (var assembly in newAssemblies)
                 // includeInternalTypes: handlers are discovered regardless of visibility, so validators
                 // must be too. Otherwise an `internal sealed` validator is silently never registered and
@@ -48,29 +58,8 @@ public static class ValidationServiceCollectionExtensions
         if (existing is not null)
             return existing;
 
-        var registry = new ValidatorAssemblyRegistry();
+        var registry = new ValidatorAssemblyRegistry(services);
         services.AddSingleton(registry);
         return registry;
-    }
-
-    private sealed class ValidatorAssemblyRegistry
-    {
-        private readonly object gate = new();
-        private readonly HashSet<Assembly> assemblies = [];
-
-        public Assembly[] Add(IEnumerable<Assembly> candidates)
-        {
-            lock (gate)
-            {
-                var added = new List<Assembly>();
-                foreach (var assembly in candidates.Where(static a => a is not null))
-                {
-                    if (assemblies.Add(assembly))
-                        added.Add(assembly);
-                }
-
-                return added.ToArray();
-            }
-        }
     }
 }

@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Phoenix.Mediator.Exceptions;
+using Phoenix.Mediator.Wrappers;
 using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
@@ -69,22 +70,13 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
         if (!TryResetResponse(context, exception))
             return;
 
-        context.Response.ContentType = "application/json";
-        context.Response.StatusCode = exception.StatusCode;
-
         // A 4xx message describes what was wrong with the request itself, so it is useful to the caller.
         // Anything else stays generic.
         var message = exception.StatusCode is >= 400 and < 500
             ? exception.Message
             : GetUnknownErrorMessage(context);
 
-        var json = JsonSerializer.Serialize(new
-        {
-            errors = new[] { message },
-            traceId = GetTraceId(context)
-        });
-
-        await context.Response.WriteAsync(json);
+        await WriteErrorsAsync(context, exception.StatusCode, [message]);
     }
 
     private async Task HandleHttpResponseException(HttpContext context, HttpResponseException exception)
@@ -97,16 +89,7 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
         if (!TryResetResponse(context, exception))
             return;
 
-        context.Response.ContentType = "application/json";
-        context.Response.StatusCode = (int)exception.HttpStatusCode;
-
-        var json = JsonSerializer.Serialize(new
-        {
-            errors = exception.Errors,
-            traceId = GetTraceId(context)
-        });
-
-        await context.Response.WriteAsync(json);
+        await WriteErrorsAsync(context, (int)exception.HttpStatusCode, exception.Errors);
     }
 
     private Task HandleUnauthorizedException(HttpContext context, Exception exception)
@@ -144,17 +127,27 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
         if (!TryResetResponse(context, exception))
             return;
 
-        context.Response.ContentType = "application/json";
-        context.Response.StatusCode = (int)statusCode;
-
-        var json = JsonSerializer.Serialize(new
-        {
-            errors = new[] { GetUnknownErrorMessage(context) },
-            traceId = GetTraceId(context)
-        });
-
-        await context.Response.WriteAsync(json);
+        await WriteErrorsAsync(context, (int)statusCode, [GetUnknownErrorMessage(context)]);
     }
+
+    /// <summary>
+    /// Writes the one error body this package documents and advertises. Every arm goes through here so the
+    /// wire shape lives in <see cref="ErrorsResponse"/> alone — it used to be hand-rolled as an anonymous
+    /// type once per arm, next to a fourth copy in the endpoint helpers' <c>Produces&lt;ErrorsResponse&gt;</c>
+    /// metadata, which is the sort of drift a client only finds in production.
+    /// </summary>
+    private async Task WriteErrorsAsync(HttpContext context, int statusCode, IReadOnlyList<string> errors)
+    {
+        context.Response.ContentType = "application/json";
+        context.Response.StatusCode = statusCode;
+
+        await context.Response.WriteAsync(
+            JsonSerializer.Serialize(new ErrorsResponse(errors, GetTraceId(context)), ErrorBodyJsonOptions));
+    }
+
+    // The anonymous types this replaced spelled their members in camelCase literally. ErrorsResponse names
+    // them in PascalCase, so the camelCase policy is what keeps the body byte-identical for existing clients.
+    private static readonly JsonSerializerOptions ErrorBodyJsonOptions = new(JsonSerializerDefaults.Web);
 
     private static string GetTraceId(HttpContext context)
         => Activity.Current?.TraceId.ToString() ?? context.TraceIdentifier;
@@ -199,8 +192,9 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
                 return message;
         }
 
-        return errorMessages.Values.FirstOrDefault(static message => !string.IsNullOrWhiteSpace(message))
-            ?? UnknownErrorMessage;
+        // BuildErrorMessages drops blank values and the empty case returned above, so there is always a
+        // message left to fall back on here.
+        return errorMessages.Values.First();
     }
 
     private static Dictionary<string, string> BuildErrorMessages(IConfiguration configuration)

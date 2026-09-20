@@ -36,7 +36,7 @@ internal sealed class RequestBodyJsonOptionsSetup : IPostConfigureOptions<JsonOp
         public JsonTypeInfo? GetTypeInfo(Type type, JsonSerializerOptions options)
         {
             var typeInfo = inner.GetTypeInfo(type, options);
-            if (typeInfo is not { Kind: JsonTypeInfoKind.Object } || !IsMediatorRequest(type))
+            if (typeInfo is not { Kind: JsonTypeInfoKind.Object } || !MediatorRequestTypes.IsRequest(type))
                 return typeInfo;
 
             var constructorParameters = type.GetConstructors().SelectMany(static c => c.GetParameters()).ToArray();
@@ -48,12 +48,6 @@ internal sealed class RequestBodyJsonOptionsSetup : IPostConfigureOptions<JsonOp
 
             return typeInfo;
         }
-    }
-
-    private static bool IsMediatorRequest(Type type)
-    {
-        return typeof(IRequest).IsAssignableFrom(type)
-            || type.GetInterfaces().Any(static i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IRequest<>));
     }
 
     private static bool IsBoundOutsideBody(JsonPropertyInfo property, ParameterInfo[] constructorParameters)
@@ -102,7 +96,16 @@ internal sealed class RequestBodyJsonOptionsSetup : IPostConfigureOptions<JsonOp
 
         public override T? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
         {
-            reader.Skip();
+            // TrySkip, not Skip. Reading a request body is a STREAMING deserialization, so the reader can
+            // sit on a buffer that does not yet hold the rest of the payload, and Skip() throws there
+            // ("Cannot skip tokens on partial JSON"). That surfaced as a 400 for every positional record
+            // whose body actually carried the excluded member — the exact case this whole type exists to
+            // neutralize — while a synchronous Deserialize(string) never hit it.
+            // System.Text.Json reads ahead so a custom value converter always sees the complete value,
+            // which is why TrySkip succeeds; the guard keeps a silent mis-bind from replacing a loud failure.
+            if (!reader.TrySkip())
+                throw new JsonException($"Could not skip the body value of an excluded '{typeToConvert}' member.");
+
             return default;
         }
 

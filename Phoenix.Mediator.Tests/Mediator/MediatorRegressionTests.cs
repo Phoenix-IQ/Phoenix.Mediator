@@ -27,6 +27,7 @@ using Phoenix.Mediator.Validation;
 using Phoenix.Mediator.Web;
 using Phoenix.Mediator.Web.Middlewares;
 using Phoenix.Mediator.Wrappers;
+using Phoenix.Mediator.Tests.Infrastructure;
 using Xunit;
 using HttpJsonOptions = Microsoft.AspNetCore.Http.Json.JsonOptions;
 
@@ -94,7 +95,7 @@ public sealed class MediatorRegressionTests
     {
         var services = new ServiceCollection();
 
-        services.AddMediatorHandlers(new PartiallyLoadableAssembly(typeof(ValidatedRequestHandler)));
+        services.AddMediatorHandlers(new PartiallyLoadableFakeAssembly(typeof(ValidatedRequestHandler)));
 
         Assert.Contains(services, static descriptor =>
             descriptor.ServiceType == typeof(IRequestHandler<ValidatedRequest, SingleResponse<string>>)
@@ -470,13 +471,6 @@ public sealed class MediatorRegressionTests
 
         public void OnCompleted(Func<object, Task> callback, object state) { }
         public void OnStarting(Func<object, Task> callback, object state) { }
-    }
-
-    // Simulates an assembly where some types reference a dependency that isn't deployed.
-    private sealed class PartiallyLoadableAssembly(params Type[] loadableTypes) : Assembly
-    {
-        public override Type[] GetTypes()
-            => throw new ReflectionTypeLoadException([.. loadableTypes, null], [new TypeLoadException("Simulated missing dependency.")]);
     }
 
     private static IConfiguration CreateConfiguration(Dictionary<string, string?>? values = null)

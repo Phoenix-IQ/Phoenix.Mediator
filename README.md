@@ -151,6 +151,34 @@ app.MapEndpoints(new MapEndpointsOptions
 
 Or compose the pieces directly: `app.UsePhoenixExceptionHandling();`, `app.MapPhoenixHealthChecks();`, then `app.MapEndpoints(...)`.
 
+### Duplicate routes
+
+Mapping the same route and HTTP method twice is accepted by ASP.NET Core: it only fails when a request first matches both endpoints, with an `AmbiguousMatchException` that surfaces as a 500. A route duplicated by accident — two endpoint groups mapping `GET users/{id}`, or the same route with a different parameter name — therefore stays invisible until someone calls it.
+
+`MapEndpoints` reports these instead, and throws before the app starts:
+
+```
+1 route is mapped more than once. ASP.NET Core does not fail on this while routes are built; it throws
+AmbiguousMatchException (HTTP 500) the first time a request matches more than one endpoint:
+
+  GET /users/{id}:
+    - HTTP: GET users/{id} (mapped in Sample.Api.UserEndpoints)
+    - HTTP: GET users/{userId} (mapped in Sample.Api.AdminEndpoints)
+```
+
+Routes the matcher can tell apart are not reported: a different HTTP method, a route constraint (`{id:int}` next to `{slug}`), a different `WithOrder`, a different `RequireHost`, or an endpoint mapped for every method (like `/health`) next to one mapped for a specific method.
+
+To log instead of throwing, or to turn the check off:
+
+```csharp
+app.MapEndpoints(new MapEndpointsOptions
+{
+    DuplicateEndpointHandling = DuplicateEndpointHandling.Warn // or .None
+});
+```
+
+Only endpoints mapped by the time `MapEndpoints` returns are checked. If you map more afterwards, call `app.ValidateNoDuplicateEndpoints();` once you are done.
+
 ## Sending requests
 
 In endpoints, use `SendAsApiResult`. It sends the request through the mediator and maps the result to an `IResult` (see [Response and error behavior](#response-and-error-behavior)):
@@ -362,6 +390,20 @@ Notes:
 Install `Phoenix.Mediator.Validation` and call `AddMediatorValidation(assemblies...)` — it registers the
 validation pipeline behavior and all FluentValidation validators in those assemblies.
 Validation failures are returned as `400` with the `errors` response body.
+
+Visibility does not matter: `public`, `internal`, `file`-scoped and `private` nested validators are all
+discovered, the same way handlers are.
+
+A validator that is never registered fails silently — the behavior finds no validators for the request,
+reports no failures and lets it through, so invalid input is accepted exactly as if it had been checked.
+Each case that causes it is logged as a warning once at host startup:
+
+| Warning | Cause |
+| --- | --- |
+| `AddMediatorValidation() was called without assemblies` | The behavior is registered but nothing is scanned. Intentional only if you register your `IValidator<T>` implementations yourself — the warning is suppressed when you have. |
+| `found no FluentValidation validators in the scanned assemblies` | The assemblies you passed hold no validators. Validators often live in a different assembly from the handlers. |
+| `still has unbound type parameters` | The validator is generic, or is nested inside a generic type and inherits its type parameters. The scan skips it. Move it out of the generic type, or register a closed version explicitly. |
+| `has no public constructor` | The validator is registered but the container cannot construct it, so the first request that uses it throws `A suitable constructor ... could not be located`. |
 
 ## Optional logging helpers
 

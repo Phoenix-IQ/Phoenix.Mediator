@@ -18,12 +18,13 @@ using Phoenix.Mediator.Validation;
 using Phoenix.Mediator.Web;
 using Phoenix.Mediator.Web.Middlewares;
 using Phoenix.Mediator.Wrappers;
+using Phoenix.Mediator.Tests.Infrastructure;
 using Xunit;
 
 namespace Phoenix.Mediator.Tests;
 
 /// <summary>
-/// Regressions for the issues found in the 2026-09-17 review (see REVIEW-FINDINGS.md).
+/// Regressions for the issues found in the 2026-09-17 review (see docs/REVIEW-FINDINGS.md).
 /// </summary>
 public sealed class ReviewFixTests
 {
@@ -64,7 +65,7 @@ public sealed class ReviewFixTests
     {
         var services = new ServiceCollection();
 
-        services.AddMediator().AddMediatorHandlers(new StubAssembly(typeof(OpenGenericHandler<>), typeof(ReviewFixRequestHandler)));
+        services.AddMediator().AddMediatorHandlers(new FakeAssembly(typeof(OpenGenericHandler<>), typeof(ReviewFixRequestHandler)));
 
         using var provider = services.BuildServiceProvider(validateScopes: true);
         using var scope = provider.CreateScope();
@@ -80,7 +81,7 @@ public sealed class ReviewFixTests
         var services = new ServiceCollection();
 
         var exception = Assert.Throws<InvalidOperationException>(() =>
-            services.AddMediatorHandlers(new StubAssembly(
+            services.AddMediatorHandlers(new FakeAssembly(
                 typeof(DuplicateHandlers<object>.First),
                 typeof(DuplicateHandlers<object>.Second))));
 
@@ -149,7 +150,7 @@ public sealed class ReviewFixTests
         context.Response.Body = new MemoryStream();
 
         RequestDelegate next = _ => throw new BadHttpRequestException("Request body too large.", StatusCodes.Status413PayloadTooLarge);
-        var middleware = new ExceptionHandlingMiddleware(next, new CapturingLogger(), new ConfigurationBuilder().Build());
+        var middleware = new ExceptionHandlingMiddleware(next, new RecordingLoggerProvider().CreateLogger<ExceptionHandlingMiddleware>(), new ConfigurationBuilder().Build());
 
         await middleware.InvokeAsync(context);
 
@@ -171,12 +172,12 @@ public sealed class ReviewFixTests
         var context = new DefaultHttpContext { RequestAborted = aborted.Token };
         context.Response.Body = new MemoryStream();
 
-        var logger = new CapturingLogger();
+        var recorder = new RecordingLoggerProvider();
         RequestDelegate next = _ => throw new OperationCanceledException(aborted.Token);
-        var middleware = new ExceptionHandlingMiddleware(next, logger, new ConfigurationBuilder().Build());
+        var middleware = new ExceptionHandlingMiddleware(next, recorder.CreateLogger<ExceptionHandlingMiddleware>(), new ConfigurationBuilder().Build());
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => middleware.InvokeAsync(context));
-        Assert.DoesNotContain(logger.Entries, static entry => entry.Level >= LogLevel.Warning);
+        Assert.Empty(recorder.Warnings);
     }
 
     // Finding 18: .NET throws UnauthorizedAccessException for file permission errors too, so a 401
@@ -187,14 +188,14 @@ public sealed class ReviewFixTests
         var context = new DefaultHttpContext();
         context.Response.Body = new MemoryStream();
 
-        var logger = new CapturingLogger();
+        var recorder = new RecordingLoggerProvider();
         RequestDelegate next = _ => throw new UnauthorizedAccessException("Access to the path 'x' is denied.");
-        var middleware = new ExceptionHandlingMiddleware(next, logger, new ConfigurationBuilder().Build());
+        var middleware = new ExceptionHandlingMiddleware(next, recorder.CreateLogger<ExceptionHandlingMiddleware>(), new ConfigurationBuilder().Build());
 
         await middleware.InvokeAsync(context);
 
         Assert.Equal(StatusCodes.Status401Unauthorized, context.Response.StatusCode);
-        Assert.Contains(logger.Entries, static entry => entry.Level >= LogLevel.Warning && entry.Exception is UnauthorizedAccessException);
+        Assert.Contains(recorder.Warnings, static entry => entry.Exception is UnauthorizedAccessException);
     }
 
     // Finding 17: role values that are not valid C# identifiers need a mapping.
@@ -268,12 +269,7 @@ public sealed class ReviewFixTests
 
     private static WebApplication CreateBareApp()
     {
-        var builder = WebApplication.CreateBuilder(new WebApplicationOptions
-        {
-            ApplicationName = typeof(ReviewFixTests).Assembly.GetName().Name,
-            ContentRootPath = AppContext.BaseDirectory,
-            EnvironmentName = Environments.Production,
-        });
+        var builder = TestApps.CreateBuilder();
 
         builder.Services.AddMediator();
         builder.Services.AddAuthorization();
@@ -283,34 +279,9 @@ public sealed class ReviewFixTests
 
     private static string? SingleRolesMetadata(WebApplication app, string route)
     {
-        var endpoint = ((IEndpointRouteBuilder)app).DataSources
-            .SelectMany(static dataSource => dataSource.Endpoints)
-            .OfType<RouteEndpoint>()
-            .Single(endpoint => endpoint.RoutePattern.RawText is not null
-                && endpoint.RoutePattern.RawText.EndsWith(route, StringComparison.OrdinalIgnoreCase));
-
-        return Assert.Single(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>()).Roles;
+        return Assert.Single(app.Endpoint(route).Metadata.GetOrderedMetadata<IAuthorizeData>()).Roles;
     }
 
-    private sealed record LoggedEntry(LogLevel Level, Exception? Exception);
-
-    private sealed class CapturingLogger : ILogger<ExceptionHandlingMiddleware>
-    {
-        public List<LoggedEntry> Entries { get; } = [];
-
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel logLevel) => true;
-
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-            => Entries.Add(new LoggedEntry(logLevel, exception));
-    }
-
-    /// <summary>An assembly whose type list is fixed, so a scan sees exactly these types.</summary>
-    private sealed class StubAssembly(params Type[] types) : Assembly
-    {
-        public override Type[] GetTypes() => types;
-        public override Type[] GetExportedTypes() => types.Where(static type => type.IsVisible).ToArray();
-    }
 }
 
 public sealed class ReviewFixRequest : IRequest<SingleResponse<string>>
