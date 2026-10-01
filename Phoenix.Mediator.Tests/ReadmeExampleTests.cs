@@ -1103,25 +1103,14 @@ public sealed class ReadmeExampleTests
         Assert.Equal("Unknown error occurred", JsonBody(await circuit.Content.ReadAsStringAsync()).GetProperty("errors")[0].GetString());
     }
 
-    // "ArgumentException, KeyNotFoundException and UnauthorizedAccessException are 500s, logged at Error."
+    // "ArgumentException, KeyNotFoundException and UnauthorizedAccessException are 500s too."
     [Fact]
-    public async Task ExceptionHandling_TurnsAnArgumentExceptionIntoA500_ByDefault()
+    public async Task ExceptionHandling_TurnsAnArgumentExceptionIntoA500()
     {
         await using var app = await StartErrorReadmeAppAsync(configure: null);
         using var client = app.GetTestClient();
 
         Assert.Equal(HttpStatusCode.InternalServerError, (await client.GetAsync("readme-errors/argument")).StatusCode);
-    }
-
-    // "Versions before 3.0.0 mapped them to 400, 404 and 401; to keep that:" and the snippet.
-    [Fact]
-    public async Task ExceptionHandlingOptions_MapCommonExceptionsOn_TurnsAnArgumentExceptionIntoA400()
-    {
-        await using var app = await StartErrorReadmeAppAsync(static services =>
-            services.Configure<ExceptionHandlingOptions>(options => options.MapCommonExceptions = true));
-        using var client = app.GetTestClient();
-
-        Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("readme-errors/argument")).StatusCode);
     }
 
     // "Client errors (4xx) are logged at Information, without the stack trace ... Server errors (5xx) are logged at
@@ -2071,23 +2060,20 @@ public sealed class ReadmeExampleTests
         Assert.True(response.Json.TryGetProperty("traceId", out _));
     }
 
-    // "UnauthorizedAccessException is logged (still mapped to 401; since 3.0.0 a 500 unless MapCommonExceptions is on).
-    // .NET throws it for file-permission errors too, so it should never pass silently."
+    // "UnauthorizedAccessException is logged (still mapped to 401; a 500 since 3.0.0). .NET throws it for
+    // file-permission errors too, so it should never pass silently."
     // Depth: ReviewFixTests.ExceptionHandlingMiddleware_LogsUnauthorizedAccessException.
     [Fact]
-    public async Task Upgrade_UnauthorizedAccessExceptionIsLogged_AndIs401OnlyWithMapCommonExceptions()
+    public async Task Upgrade_UnauthorizedAccessExceptionIsLoggedAsAServerError()
     {
         var logs = new RecordingLoggerProvider();
 
-        var mapped = await RunExceptionMiddlewareAsync(
+        var response = await RunExceptionMiddlewareAsync(
             new UnauthorizedAccessException("Access to the path 'x' is denied."),
-            logger: new Logger<ExceptionHandlingMiddleware>(logs),
-            options: new ExceptionHandlingOptions { MapCommonExceptions = true });
-        var byDefault = await RunExceptionMiddlewareAsync(new UnauthorizedAccessException("Access to the path 'x' is denied."));
+            logger: new Logger<ExceptionHandlingMiddleware>(logs));
 
-        Assert.Equal(StatusCodes.Status401Unauthorized, mapped.StatusCode);
-        Assert.Contains(logs.Warnings, entry => entry.Exception is UnauthorizedAccessException);
-        Assert.Equal(StatusCodes.Status500InternalServerError, byDefault.StatusCode);
+        Assert.Equal(StatusCodes.Status500InternalServerError, response.StatusCode);
+        Assert.Contains(logs.Entries, entry => entry.Level == LogLevel.Error && entry.Exception is UnauthorizedAccessException);
     }
 
     // "MultiResponse<T> takes an IReadOnlyList<T> in its constructor and exposes PageSize, so it can be
@@ -2450,8 +2436,7 @@ public sealed class ReadmeExampleTests
         IConfiguration? configuration = null,
         string? acceptLanguage = null,
         ILogger<ExceptionHandlingMiddleware>? logger = null,
-        CancellationToken requestAborted = default,
-        ExceptionHandlingOptions? options = null)
+        CancellationToken requestAborted = default)
     {
         var context = new DefaultHttpContext { RequestAborted = requestAborted };
         context.Response.Body = new MemoryStream();
@@ -2459,16 +2444,10 @@ public sealed class ReadmeExampleTests
         if (!string.IsNullOrWhiteSpace(acceptLanguage))
             context.Request.Headers.AcceptLanguage = acceptLanguage;
 
-        var middleware = options is null
-            ? new ExceptionHandlingMiddleware(
-                _ => throw exception,
-                logger ?? NullLogger<ExceptionHandlingMiddleware>.Instance,
-                configuration ?? new ConfigurationBuilder().Build())
-            : new ExceptionHandlingMiddleware(
-                _ => throw exception,
-                logger ?? NullLogger<ExceptionHandlingMiddleware>.Instance,
-                configuration ?? new ConfigurationBuilder().Build(),
-                Options.Create(options));
+        var middleware = new ExceptionHandlingMiddleware(
+            _ => throw exception,
+            logger ?? NullLogger<ExceptionHandlingMiddleware>.Instance,
+            configuration ?? new ConfigurationBuilder().Build());
 
         await middleware.InvokeAsync(context);
 

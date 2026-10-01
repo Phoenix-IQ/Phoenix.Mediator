@@ -551,63 +551,25 @@ public sealed class ExceptionHandlingMiddlewareTests
     }
 
     // ---------------------------------------------------------------------------------------------
-    // UnauthorizedAccessException, with MapCommonExceptions on. Off (the default), it is an unhandled 500.
-    // ---------------------------------------------------------------------------------------------
-
-    // The source only sets the status: a 401 with no body lets the authentication middleware's own
-    // challenge semantics apply. If a body appeared here it would break WWW-Authenticate flows.
-    [Fact]
-    public async Task InvokeAsync_UnauthorizedAccessException_Writes401WithNoBody()
-    {
-        var context = await ExRunAsync(
-            new UnauthorizedAccessException("Access to the path 'x' is denied."),
-            options: new ExceptionHandlingOptions { MapCommonExceptions = true });
-
-        Assert.Equal(StatusCodes.Status401Unauthorized, context.Response.StatusCode);
-        Assert.Empty(ExBody(context));
-        Assert.Null(context.Response.ContentType);
-    }
-
-    // .NET throws UnauthorizedAccessException for file-system permission errors too, so a 401 that left
-    // nothing in the log would make a broken directory permission look like a sign-in problem. Warning and
-    // not Error, though: a caller arriving without a token is routine, and paging on it trains everyone to
-    // ignore the error log. Asserting a single entry at Warning-or-above also pins "nothing was logged at Error".
-    [Fact]
-    public async Task InvokeAsync_UnauthorizedAccessException_LogsOneWarningCarryingTheExceptionAndTheRoute()
-    {
-        var recorder = new RecordingLoggerProvider();
-        var exception = new UnauthorizedAccessException("Access to the path 'x' is denied.");
-
-        await ExRunAsync(exception, logger: ExLogger(recorder), options: new ExceptionHandlingOptions { MapCommonExceptions = true });
-
-        var warning = Assert.Single(recorder.Warnings);
-        Assert.Equal(LogLevel.Warning, warning.Level);
-        Assert.Same(exception, warning.Exception);
-        Assert.Contains($"{ExRequestMethod} {ExRequestPath}", warning.Message);
-    }
-
-    // ---------------------------------------------------------------------------------------------
     // Unhandled exceptions.
     // ---------------------------------------------------------------------------------------------
 
-    // With MapCommonExceptions on, the statuses of versions before 3.0: a repository's KeyNotFoundException is a 404,
-    // for what is really a missing row. Everything else stays a 500.
+    // Whatever its type, an exception nothing maps is a 500 with the generic message. That includes
+    // KeyNotFoundException and ArgumentException, which versions before 3.0 turned into 404 and 400.
     [Theory]
-    [InlineData("key-not-found", 404)]
-    [InlineData("argument", 400)]
-    [InlineData("argument-null", 400)]
-    [InlineData("argument-out-of-range", 400)]
-    [InlineData("invalid-operation", 500)]
-    [InlineData("timeout", 500)]
-    [InlineData("plain", 500)]
-    public async Task InvokeAsync_UnhandledException_MapsTheExceptionTypeToAStatusCode(string exceptionKind, int expectedStatusCode)
+    [InlineData("key-not-found")]
+    [InlineData("argument")]
+    [InlineData("argument-null")]
+    [InlineData("argument-out-of-range")]
+    [InlineData("invalid-operation")]
+    [InlineData("timeout")]
+    [InlineData("plain")]
+    public async Task InvokeAsync_UnhandledException_IsA500WithTheGenericMessage(string exceptionKind)
     {
-        var context = await ExRunAsync(ExCreateException(exceptionKind), options: new ExceptionHandlingOptions { MapCommonExceptions = true });
+        var context = await ExRunAsync(ExCreateException(exceptionKind));
 
-        Assert.Equal(expectedStatusCode, context.Response.StatusCode);
+        Assert.Equal(StatusCodes.Status500InternalServerError, context.Response.StatusCode);
         Assert.Equal("application/json", context.Response.ContentType);
-        // The mapping moves the status and nothing else: whatever the type, the caller sees one generic
-        // message. A 404 that started echoing the exception text would leak the key it failed on.
         Assert.Equal(ExBuiltInUnknownMessage, Assert.Single(ExErrors(context)));
     }
 
@@ -620,18 +582,6 @@ public sealed class ExceptionHandlingMiddlewareTests
 
         Assert.Equal(ExBuiltInUnknownMessage, Assert.Single(ExErrors(context)));
         Assert.DoesNotContain("ex-secret-connection-string", ExBody(context));
-    }
-
-    // The mapped 4xx statuses take the same generic body: the mapping changes the status only, never
-    // the message, so a KeyNotFoundException cannot leak the key it failed on.
-    [Fact]
-    public async Task InvokeAsync_UnhandledExceptionMappedToAClientError_StillWritesTheGenericMessage()
-    {
-        var context = await ExRunAsync(new KeyNotFoundException("ex-secret-cache-key"), options: new ExceptionHandlingOptions { MapCommonExceptions = true });
-
-        Assert.Equal(StatusCodes.Status404NotFound, context.Response.StatusCode);
-        Assert.Equal(ExBuiltInUnknownMessage, ExFirstError(context));
-        Assert.DoesNotContain("ex-secret-cache-key", ExBody(context));
     }
 
     // Unlike the handled arms, this one is a server fault and must be logged at Error with the stack

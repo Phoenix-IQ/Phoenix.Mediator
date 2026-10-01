@@ -129,6 +129,20 @@
   </Suppression>
   <Suppression>
     <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Phoenix.Mediator.Web.ExceptionHandlingOptions.get_MapCommonExceptions</Target>
+    <Left>lib/net10.0/Phoenix.Mediator.dll</Left>
+    <Right>lib/net10.0/Phoenix.Mediator.dll</Right>
+    <IsBaselineSuppression>true</IsBaselineSuppression>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Phoenix.Mediator.Web.ExceptionHandlingOptions.set_MapCommonExceptions(System.Boolean)</Target>
+    <Left>lib/net10.0/Phoenix.Mediator.dll</Left>
+    <Right>lib/net10.0/Phoenix.Mediator.dll</Right>
+    <IsBaselineSuppression>true</IsBaselineSuppression>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
     <Target>M:Phoenix.Mediator.Web.BaseEndpointGroup.Map(Microsoft.AspNetCore.Builder.WebApplication)</Target>
     <Left>lib/net8.0/Phoenix.Mediator.dll</Left>
     <Right>lib/net8.0/Phoenix.Mediator.dll</Right>
@@ -192,6 +206,20 @@
   </Suppression>
   <Suppression>
     <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Phoenix.Mediator.Web.ExceptionHandlingOptions.get_MapCommonExceptions</Target>
+    <Left>lib/net8.0/Phoenix.Mediator.dll</Left>
+    <Right>lib/net8.0/Phoenix.Mediator.dll</Right>
+    <IsBaselineSuppression>true</IsBaselineSuppression>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Phoenix.Mediator.Web.ExceptionHandlingOptions.set_MapCommonExceptions(System.Boolean)</Target>
+    <Left>lib/net8.0/Phoenix.Mediator.dll</Left>
+    <Right>lib/net8.0/Phoenix.Mediator.dll</Right>
+    <IsBaselineSuppression>true</IsBaselineSuppression>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
     <Target>M:Phoenix.Mediator.Web.BaseEndpointGroup.Map(Microsoft.AspNetCore.Builder.WebApplication)</Target>
     <Left>lib/net9.0/Phoenix.Mediator.dll</Left>
     <Right>lib/net9.0/Phoenix.Mediator.dll</Right>
@@ -249,6 +277,20 @@
   <Suppression>
     <DiagnosticId>CP0002</DiagnosticId>
     <Target>M:Phoenix.Mediator.Web.EndpointsExtensions.PutMultiPart(Microsoft.AspNetCore.Routing.IEndpointRouteBuilder,System.String,System.Delegate,System.Int64,System.Int32,System.Boolean,Phoenix.Mediator.Web.Dtos.ResponseDto[])</Target>
+    <Left>lib/net9.0/Phoenix.Mediator.dll</Left>
+    <Right>lib/net9.0/Phoenix.Mediator.dll</Right>
+    <IsBaselineSuppression>true</IsBaselineSuppression>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Phoenix.Mediator.Web.ExceptionHandlingOptions.get_MapCommonExceptions</Target>
+    <Left>lib/net9.0/Phoenix.Mediator.dll</Left>
+    <Right>lib/net9.0/Phoenix.Mediator.dll</Right>
+    <IsBaselineSuppression>true</IsBaselineSuppression>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>M:Phoenix.Mediator.Web.ExceptionHandlingOptions.set_MapCommonExceptions(System.Boolean)</Target>
     <Left>lib/net9.0/Phoenix.Mediator.dll</Left>
     <Right>lib/net9.0/Phoenix.Mediator.dll</Right>
     <IsBaselineSuppression>true</IsBaselineSuppression>

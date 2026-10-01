@@ -303,13 +303,9 @@ builder.Services.Configure<ExceptionHandlingOptions>(options => options
 - A mapping also covers exceptions derived from its type, and the most specific mapping wins.
 - `HttpResponseException`, the framework's bad-request exceptions and cancelled requests are handled before any mapping.
 
-`ArgumentException`, `KeyNotFoundException` and `UnauthorizedAccessException` are `500`s, logged at Error: they are
-usually server-side bugs rather than bad requests. Versions before 3.0.0 mapped them to `400`, `404` and `401`; to keep
-that:
-
-```csharp
-builder.Services.Configure<ExceptionHandlingOptions>(options => options.MapCommonExceptions = true);
-```
+`ArgumentException`, `KeyNotFoundException` and `UnauthorizedAccessException` are `500`s too: they are usually
+server-side bugs rather than bad requests. Where you mean `400`, `401`, `403` or `404`, throw `BadRequestException`,
+`UnauthorizedException`, `ForbiddenException` or `NotFoundException`.
 
 ### Logging
 
@@ -317,10 +313,6 @@ Client errors (4xx) are logged at `Information`, without the stack trace. A 404 
 caller's doing, and a stack trace per bad request buried the real failures in the exception logs. The log line keeps
 the route, the status, the exception type and the messages. Change the level with
 `ExceptionHandlingOptions.ClientErrorLogLevel`. Server errors (5xx) are logged at `Error`, with the exception.
-
-With `MapCommonExceptions` on, the common-exception mappings keep their old levels, because those exceptions usually
-mean a server-side bug: `ArgumentException` → `400` and `KeyNotFoundException` → `404` are logged at `Error`, and
-`UnauthorizedAccessException` → `401` at `Warning`, both with the exception.
 
 ## Endpoint helpers
 
@@ -648,12 +640,12 @@ Notes:
   sits outside it, reported every disconnect as an unhandled error. A request timeout is still rethrown, so
   `UseRequestTimeouts` writes its `504`. Only `UseRequestTimeouts` is told apart from a disconnect: a timeout
   middleware of your own that cancels `RequestAborted` now sees the request end with `499` instead of the exception.
-- **`ArgumentException`, `KeyNotFoundException` and `UnauthorizedAccessException` are `500`s by default**, logged at
-  `Error`: `ExceptionHandlingOptions.MapCommonExceptions` now defaults to `false`. They used to be `400`, `404` and
-  `401`, which told the caller they had sent a bad request when the cause was usually a server-side bug, and kept the
-  failure out of 5xx monitoring. Where a handler means one of those statuses, throw `BadRequestException`,
-  `NotFoundException`, `UnauthorizedException` or `ForbiddenException`. Set `MapCommonExceptions = true` to keep the old
-  mapping.
+- **`ArgumentException`, `KeyNotFoundException` and `UnauthorizedAccessException` are `500`s**, logged at `Error` like
+  any other exception nothing maps, and `ExceptionHandlingOptions.MapCommonExceptions` is removed. They used to be
+  `400`, `404` and `401`, which told the caller they had sent a bad request when the cause was usually a server-side bug,
+  and kept the failure out of 5xx monitoring. Where a handler means one of those statuses, throw `BadRequestException`,
+  `NotFoundException`, `UnauthorizedException` (not signed in) or `ForbiddenException` (signed in but not allowed). Code
+  that sets `MapCommonExceptions` no longer compiles: delete the line.
 
 ### 2.4.0
 
@@ -716,8 +708,8 @@ Most apps upgrade without code changes; the bullets below that can need one say 
 - **Framework bad requests keep their status code.** Malformed JSON, missing required parameters, invalid
   antiforgery tokens and oversized forms return their real status (`400`, `413`, ...) with the standard
   `{"errors":[...],"traceId":"..."}` body, instead of `500` in Development.
-- **`UnauthorizedAccessException` is logged** (still mapped to `401`; since 3.0.0 a `500` unless `MapCommonExceptions` is
-  on). .NET throws it for file-permission errors too, so it should never pass silently.
+- **`UnauthorizedAccessException` is logged** (still mapped to `401`; a `500` since 3.0.0). .NET throws it for
+  file-permission errors too, so it should never pass silently.
 - **`MultiResponse<T>`** takes an `IReadOnlyList<T>` in its constructor and exposes `PageSize`, so it can be
   deserialized (`ReadFromJsonAsync<MultiResponse<T>>`) as well as serialized. Existing `new MultiResponse<T>(list, …)`
   calls keep compiling.

@@ -8,7 +8,6 @@ using Phoenix.Mediator.Exceptions;
 using Phoenix.Mediator.Wrappers;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.Net;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Unicode;
@@ -143,7 +142,7 @@ public sealed class ExceptionHandlingMiddleware
 
     /// <summary>
     /// Everything that is not already an error response: the app's <see cref="ExceptionHandlingOptions"/> mappings first,
-    /// then the common-exception mappings kept for compatibility, then a 500.
+    /// then a 500.
     /// </summary>
     private async Task HandleOtherException(HttpContext context, Exception exception)
     {
@@ -158,12 +157,6 @@ public sealed class ExceptionHandlingMiddleware
                 return;
 
             await WriteErrorsAsync(context, statusCode, errors);
-            return;
-        }
-
-        if (options.MapCommonExceptions && exception is UnauthorizedAccessException)
-        {
-            await HandleUnauthorizedException(context, exception);
             return;
         }
 
@@ -218,35 +211,8 @@ public sealed class ExceptionHandlingMiddleware
             statusCode);
     }
 
-    private Task HandleUnauthorizedException(HttpContext context, Exception exception)
-    {
-        // Logged because .NET throws UnauthorizedAccessException for file-system permission errors too
-        // (saving an upload, for example). Without this, a broken directory permission looks like an
-        // authentication failure to the client and leaves nothing behind on the server.
-        logger.LogWarning(exception,
-            "UnauthorizedAccessException for {Method} {Path}; responding 401",
-            context.Request.Method,
-            context.Request.Path);
-
-        if (!TryResetResponse(context, exception))
-            return Task.CompletedTask;
-
-        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-
-        return Task.CompletedTask;
-    }
-
     private async Task HandleUnhandledException(HttpContext context, Exception exception)
     {
-        var statusCode = options.MapCommonExceptions
-            ? exception switch
-            {
-                KeyNotFoundException => HttpStatusCode.NotFound,
-                ArgumentException => HttpStatusCode.BadRequest,
-                _ => HttpStatusCode.InternalServerError
-            }
-            : HttpStatusCode.InternalServerError;
-
         logger.LogError(exception,
             "Unhandled exception for {Method} {Path}",
             context.Request.Method,
@@ -255,7 +221,7 @@ public sealed class ExceptionHandlingMiddleware
         if (!TryResetResponse(context, exception))
             return;
 
-        await WriteErrorsAsync(context, (int)statusCode, [GetUnknownErrorMessage(context)]);
+        await WriteErrorsAsync(context, StatusCodes.Status500InternalServerError, [GetUnknownErrorMessage(context)]);
     }
 
     /// <summary>

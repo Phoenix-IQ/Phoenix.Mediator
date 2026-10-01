@@ -272,22 +272,17 @@ public sealed class ExceptionMappingTests
     }
 
     // ---------------------------------------------------------------------------------------------
-    // MapCommonExceptions
+    // The exceptions versions before 3.0 mapped to 400, 404 and 401.
     // ---------------------------------------------------------------------------------------------
 
-    [Fact]
-    public void MapCommonExceptions_IsOffByDefault()
-    {
-        Assert.False(new ExceptionHandlingOptions().MapCommonExceptions);
-    }
-
-    // Off (the default), these are what they usually are: server-side bugs, reported as 500 and logged at Error.
+    // They are what they usually are: server-side bugs, reported as 500 and logged at Error. A handler that means one of
+    // those statuses throws the matching HttpResponseException, and an app can still map them itself.
     [Theory]
     [InlineData("argument")]
     [InlineData("argument-null")]
     [InlineData("key-not-found")]
     [InlineData("unauthorized-access")]
-    public async Task MapCommonExceptionsOff_ReportsTheExceptionAsAServerError(string kind)
+    public async Task CommonExceptions_AreReportedAsServerErrors(string kind)
     {
         var recorder = new RecordingLoggerProvider();
         var exception = kind switch
@@ -303,25 +298,6 @@ public sealed class ExceptionMappingTests
         Assert.Equal(StatusCodes.Status500InternalServerError, context.Response.StatusCode);
         Assert.Equal(new[] { UnknownError }, Errors(context));
         Assert.Contains(recorder.Entries, entry => entry.Level == LogLevel.Error && ReferenceEquals(entry.Exception, exception));
-    }
-
-    // On, the behavior of versions before 3.0 is unchanged, 401 with no body included.
-    [Theory]
-    [InlineData("argument", 400)]
-    [InlineData("key-not-found", 404)]
-    [InlineData("unauthorized-access", 401)]
-    public async Task MapCommonExceptionsOn_KeepsTheCompatibilityMappings(string kind, int expectedStatusCode)
-    {
-        var exception = kind switch
-        {
-            "argument" => (Exception)new ArgumentException("em-detail"),
-            "key-not-found" => new KeyNotFoundException("em-detail"),
-            _ => new UnauthorizedAccessException("em-detail"),
-        };
-
-        var context = await RunAsync(exception, new ExceptionHandlingOptions { MapCommonExceptions = true });
-
-        Assert.Equal(expectedStatusCode, context.Response.StatusCode);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -362,8 +338,7 @@ public sealed class ExceptionMappingTests
         builder.WebHost.UseTestServer();
         builder.Services.AddMediator();
         builder.Services.Configure<ExceptionHandlingOptions>(static options => options
-            .Map<EmConcurrencyException>(HttpStatusCode.Conflict, static _ => "em-changed")
-            .MapCommonExceptions = true);
+            .Map<EmConcurrencyException>(HttpStatusCode.Conflict, static _ => "em-changed"));
         await using var app = builder.Build();
 
         app.UsePhoenixExceptionHandling();
@@ -373,12 +348,11 @@ public sealed class ExceptionMappingTests
         using var client = app.GetTestClient();
 
         var mapped = await client.GetAsync("em/concurrency");
-        var argument = await client.GetAsync("em/argument");
+        var unmapped = await client.GetAsync("em/argument");
 
         Assert.Equal(HttpStatusCode.Conflict, mapped.StatusCode);
         Assert.Contains("em-changed", await mapped.Content.ReadAsStringAsync());
-        // A 500 by default: the 400 shows the configured MapCommonExceptions arrived too.
-        Assert.Equal(HttpStatusCode.BadRequest, argument.StatusCode);
+        Assert.Equal(HttpStatusCode.InternalServerError, unmapped.StatusCode);
     }
 
     // ---------------------------------------------------------------------------------------------

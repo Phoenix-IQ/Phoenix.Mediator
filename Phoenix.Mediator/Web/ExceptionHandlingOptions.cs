@@ -24,19 +24,6 @@ public sealed class ExceptionHandlingOptions
     private readonly Dictionary<Type, ExceptionMapping> mappings = [];
 
     /// <summary>
-    /// Map <see cref="ArgumentException"/> (including <see cref="ArgumentNullException"/> and
-    /// <see cref="ArgumentOutOfRangeException"/>) to 400, <see cref="KeyNotFoundException"/> to 404 and
-    /// <see cref="UnauthorizedAccessException"/> to 401, as versions before 3.0 did. Default <see langword="false"/>.
-    /// <para>
-    /// Off, they are 500s, logged at Error. These exceptions are usually a server-side bug — a null connection string, a
-    /// missing dictionary key, a file-system permission — so mapping them tells the caller they sent a bad request and
-    /// keeps the failure out of 5xx monitoring. Handlers that mean 400, 404 or 403 can throw
-    /// <see cref="BadRequestException"/>, <see cref="NotFoundException"/> or <see cref="ForbiddenException"/>.
-    /// </para>
-    /// </summary>
-    public bool MapCommonExceptions { get; set; }
-
-    /// <summary>
     /// The level client errors (4xx) are logged at: an <see cref="HttpResponseException"/>, a framework
     /// <c>BadHttpRequestException</c>, or a mapped exception. Default <see cref="LogLevel.Information"/>.
     /// <para>
