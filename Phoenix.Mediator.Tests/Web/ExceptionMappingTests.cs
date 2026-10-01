@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -228,7 +229,7 @@ public sealed class ExceptionMappingTests
         Assert.Equal(StatusCodes.Status404NotFound, context.Response.StatusCode);
     }
 
-    // The cancellation of an aborted request is rethrown before any mapping, so UseRequestTimeouts still writes its 504.
+    // The cancellation of an aborted request is handled before any mapping: a client disconnect ends with 499.
     [Fact]
     public async Task Map_DoesNotApplyToTheCancellationOfAnAbortedRequest()
     {
@@ -238,6 +239,23 @@ public sealed class ExceptionMappingTests
         var context = CreateContext();
         context.RequestAborted = aborted.Token;
         var middleware = CreateMiddleware(_ => throw new OperationCanceledException(aborted.Token), options);
+
+        await middleware.InvokeAsync(context);
+
+        Assert.Equal(StatusCodes.Status499ClientClosedRequest, context.Response.StatusCode);
+    }
+
+    // A request timeout is rethrown before any mapping, so UseRequestTimeouts still writes its 504.
+    [Fact]
+    public async Task Map_DoesNotApplyToARequestTimeout()
+    {
+        using var timedOut = new CancellationTokenSource();
+        timedOut.Cancel();
+        var options = new ExceptionHandlingOptions().Map<OperationCanceledException>(HttpStatusCode.GatewayTimeout);
+        var context = CreateContext();
+        context.Features.Set<IHttpRequestTimeoutFeature>(new TestRequestTimeoutFeature(timedOut.Token));
+        context.RequestAborted = timedOut.Token;
+        var middleware = CreateMiddleware(_ => throw new OperationCanceledException(timedOut.Token), options);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => middleware.InvokeAsync(context));
     }

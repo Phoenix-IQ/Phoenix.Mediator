@@ -8,7 +8,6 @@ using Phoenix.Mediator.Abstractions;
 using Phoenix.Mediator.Mediator;
 using Phoenix.Mediator.Tests.Infrastructure;
 using Phoenix.Mediator.Web;
-using Phoenix.Mediator.Web.Dtos;
 using Phoenix.Mediator.Wrappers;
 using Xunit;
 using FromRouteAttribute = Microsoft.AspNetCore.Mvc.FromRouteAttribute;
@@ -136,23 +135,6 @@ public sealed class VerbEndpointTests
 
         AssertDeclaresErrorBody(endpoint, StatusCodes.Status400BadRequest);
         AssertDeclaresErrorBody(endpoint, StatusCodes.Status500InternalServerError);
-    }
-
-    // Explicit success responses replace the inferred ones only; the error contract is not the caller's
-    // to opt out of, because the middleware still answers with it.
-    [Fact]
-    public async Task VerbHelpers_KeepTheDefaultErrorResponses_AlongsideExplicitResponses()
-    {
-        await using var app = CreateApp();
-
-        app.Post("verb-errors/explicit", () => Results.Ok(), new ResponseDto(StatusCodes.Status201Created, typeof(VerbPayload)));
-
-        var endpoint = app.Endpoint("verb-errors/explicit");
-
-        AssertDeclaresErrorBody(endpoint, StatusCodes.Status400BadRequest);
-        AssertDeclaresErrorBody(endpoint, StatusCodes.Status500InternalServerError);
-        Assert.Contains(StatusCodes.Status401Unauthorized, StatusCodesOf(endpoint));
-        Assert.Contains(StatusCodes.Status403Forbidden, StatusCodesOf(endpoint));
     }
 
     // ------------------------------------------------------------------
@@ -503,41 +485,6 @@ public sealed class VerbEndpointTests
         Assert.Contains(okResponses, static metadata => metadata.Type == typeof(VerbOtherPayload));
     }
 
-    [Fact]
-    public async Task AddResponses_RemovesTheInferredOk_WhenExplicitResponsesOmitIt()
-    {
-        await using var app = CreateApp();
-
-        app.Post("verb-removal/explicit", ([AsParameters] VerbClassRequest request) => new VerbPayload("done"),
-            new ResponseDto(StatusCodes.Status202Accepted, null));
-
-        var statusCodes = StatusCodesOf(app.Endpoint("verb-removal/explicit"));
-
-        Assert.Contains(StatusCodes.Status202Accepted, statusCodes);
-        Assert.DoesNotContain(StatusCodes.Status200OK, statusCodes);
-    }
-
-    // The same decision taken from the explicit list rather than from inference: a caller who declares 200
-    // themselves keeps whatever the framework documented from the return type. A removal that ran whenever
-    // explicit responses were given would silently drop it.
-    [Fact]
-    public async Task AddResponses_KeepsTheInferredOk_WhenExplicitResponsesDeclareIt()
-    {
-        await using var app = CreateApp();
-
-        app.Post("verb-removal/explicit-ok", ([AsParameters] VerbVoidRequest request) => new VerbOtherPayload("done"),
-            new ResponseDto(StatusCodes.Status200OK, typeof(VerbPayload)));
-
-        var okResponses = ResponsesOf(app.Endpoint("verb-removal/explicit-ok"))
-            .Where(static metadata => metadata.StatusCode == StatusCodes.Status200OK)
-            .ToArray();
-
-        Assert.Contains(okResponses, static metadata => metadata.Type == typeof(VerbPayload));
-        Assert.Contains(okResponses, static metadata => metadata.Type == typeof(VerbOtherPayload));
-        // The empty status the request would otherwise have contributed is not added next to it.
-        Assert.DoesNotContain(StatusCodes.Status204NoContent, StatusCodesOf(app.Endpoint("verb-removal/explicit-ok")));
-    }
-
     // Nothing to infer means nothing to remove either: the framework's own 200 is left alone rather than
     // stripped from an endpoint the helper decided not to describe.
     [Fact]
@@ -565,141 +512,6 @@ public sealed class VerbEndpointTests
 
         Assert.Contains(StatusCodes.Status200OK, statusCodes);
         Assert.Contains(StatusCodes.Status204NoContent, statusCodes);
-    }
-
-    // ------------------------------------------------------------------
-    // Explicit ResponseDto arrays
-    // ------------------------------------------------------------------
-
-    [Theory]
-    [InlineData("GET")]
-    [InlineData("POST")]
-    [InlineData("PUT")]
-    [InlineData("DELETE")]
-    [InlineData("PATCH")]
-    public async Task VerbHelpers_ExplicitResponsesReplaceTheInferredSuccessResponse(string httpMethod)
-    {
-        await using var app = CreateApp();
-
-        MapVerb(app, httpMethod, "verb-explicit/ping", ([AsParameters] VerbClassRequest request) => Results.Ok(),
-            new ResponseDto(StatusCodes.Status201Created, typeof(VerbPayload)));
-
-        var endpoint = app.Endpoint("verb-explicit/ping");
-
-        Assert.Equal(typeof(VerbPayload),
-            Assert.Single(ResponsesOf(endpoint), static metadata => metadata.StatusCode == StatusCodes.Status201Created).Type);
-        // 200 would have been inferred from IRequest<VerbPayload> had the explicit set not won.
-        Assert.DoesNotContain(StatusCodes.Status200OK, StatusCodesOf(endpoint));
-    }
-
-    // Each entry lands exactly once and keeps its own schema: an explicit list is what a caller falls back on
-    // when the inferred response is wrong, so losing or duplicating one of them is the whole feature failing.
-    [Fact]
-    public async Task AddResponses_AddsEveryExplicitResponse()
-    {
-        await using var app = CreateApp();
-
-        app.Post("verb-explicit/many", () => Results.Ok(),
-            new ResponseDto(StatusCodes.Status201Created, typeof(VerbPayload)),
-            new ResponseDto(StatusCodes.Status202Accepted, null),
-            new ResponseDto(StatusCodes.Status409Conflict, typeof(ErrorsResponse)));
-
-        var responses = ResponsesOf(app.Endpoint("verb-explicit/many"));
-
-        Assert.Equal(typeof(VerbPayload),
-            Assert.Single(responses, static metadata => metadata.StatusCode == StatusCodes.Status201Created).Type);
-        Assert.Single(responses, static metadata => metadata.StatusCode == StatusCodes.Status202Accepted);
-        Assert.Equal(typeof(ErrorsResponse),
-            Assert.Single(responses, static metadata => metadata.StatusCode == StatusCodes.Status409Conflict).Type);
-    }
-
-    // A typed explicit response has to end up as a JSON body, the same as the built-in error responses;
-    // otherwise the schema is attached to no content type and generators drop it.
-    [Fact]
-    public async Task AddResponses_DeclaresExplicitTypedResponsesAsJson()
-    {
-        await using var app = CreateApp();
-
-        app.Post("verb-explicit/json", () => Results.Ok(), new ResponseDto(StatusCodes.Status201Created, typeof(VerbPayload)));
-
-        var created = Assert.Single(ResponsesOf(app.Endpoint("verb-explicit/json")),
-            static metadata => metadata.StatusCode == StatusCodes.Status201Created);
-
-        Assert.Contains("application/json", created.ContentTypes);
-    }
-
-    // ResponseDto(status, null) is how a caller says "this status carries no body" (202 Accepted, 204).
-    [Fact]
-    public async Task AddResponses_ExplicitResponseWithoutATypeDeclaresNoBody()
-    {
-        await using var app = CreateApp();
-
-        app.Post("verb-explicit/empty", () => Results.Ok(), new ResponseDto(StatusCodes.Status202Accepted, null));
-
-        var accepted = Assert.Single(ResponsesOf(app.Endpoint("verb-explicit/empty")),
-            static metadata => metadata.StatusCode == StatusCodes.Status202Accepted);
-
-        // Minimal APIs normalize "no declared type" to void rather than null.
-        Assert.True(accepted.Type is null || accepted.Type == typeof(void),
-            $"Expected no declared body type, found {accepted.Type}.");
-    }
-
-    // params gives an empty array when the caller passes nothing, so "empty" has to mean "infer", not
-    // "declare no success response at all".
-    [Fact]
-    public async Task AddResponses_FallsBackToInference_ForAnEmptyExplicitArray()
-    {
-        await using var app = CreateApp();
-
-        app.Post("verb-explicit/none", ([AsParameters] VerbClassRequest request) => Results.Ok(), Array.Empty<ResponseDto>());
-
-        AssertInfersOk(app.Endpoint("verb-explicit/none"), typeof(VerbPayload));
-    }
-
-    // The parameter is declared nullable, and a caller forwarding an optional array must not lose the
-    // inferred response (or hit a NullReferenceException).
-    [Fact]
-    public async Task AddResponses_FallsBackToInference_ForANullExplicitArray()
-    {
-        await using var app = CreateApp();
-
-        app.Post("verb-explicit/null", ([AsParameters] VerbClassRequest request) => Results.Ok(), (ResponseDto[]?)null);
-
-        AssertInfersOk(app.Endpoint("verb-explicit/null"), typeof(VerbPayload));
-    }
-
-    // ------------------------------------------------------------------
-    // ResponseDto itself
-    // ------------------------------------------------------------------
-
-    // ResponseDto is part of the public API and is a record, so callers can build sets of them, compare
-    // them and copy them with `with`. Turning it into a class would make these two instances unequal.
-    [Theory]
-    [InlineData(StatusCodes.Status200OK, typeof(VerbPayload))]
-    [InlineData(StatusCodes.Status204NoContent, null)]
-    public void ResponseDto_IsEqualWhenTheStatusCodeAndTypeMatch(int statusCode, Type? type)
-    {
-        var left = new ResponseDto(statusCode, type);
-        var right = new ResponseDto(statusCode, type);
-
-        Assert.Equal(left, right);
-        Assert.Equal(left.GetHashCode(), right.GetHashCode());
-        Assert.True(left == right);
-    }
-
-    // The other half of value equality: both members have to take part in it, or a set of responses would
-    // collapse two different ones into one.
-    [Theory]
-    [InlineData(StatusCodes.Status200OK, typeof(VerbPayload), StatusCodes.Status201Created, typeof(VerbPayload))]
-    [InlineData(StatusCodes.Status200OK, typeof(VerbPayload), StatusCodes.Status200OK, typeof(VerbOtherPayload))]
-    [InlineData(StatusCodes.Status200OK, typeof(VerbPayload), StatusCodes.Status200OK, null)]
-    public void ResponseDto_IsNotEqualWhenTheStatusCodeOrTypeDiffers(int leftStatusCode, Type? leftType, int rightStatusCode, Type? rightType)
-    {
-        var left = new ResponseDto(leftStatusCode, leftType);
-        var right = new ResponseDto(rightStatusCode, rightType);
-
-        Assert.NotEqual(left, right);
-        Assert.False(left == right);
     }
 
     // ------------------------------------------------------------------
@@ -743,16 +555,15 @@ public sealed class VerbEndpointTests
         IEndpointRouteBuilder builder,
         string httpMethod,
         string pattern,
-        Delegate handler,
-        params ResponseDto[]? responseDtos)
+        Delegate handler)
     {
         return httpMethod switch
         {
-            "GET" => builder.Get(pattern, handler, responseDtos),
-            "POST" => builder.Post(pattern, handler, responseDtos),
-            "PUT" => builder.Put(pattern, handler, responseDtos),
-            "DELETE" => builder.Delete(pattern, handler, responseDtos),
-            "PATCH" => builder.Patch(pattern, handler, responseDtos),
+            "GET" => builder.Get(pattern, handler),
+            "POST" => builder.Post(pattern, handler),
+            "PUT" => builder.Put(pattern, handler),
+            "DELETE" => builder.Delete(pattern, handler),
+            "PATCH" => builder.Patch(pattern, handler),
             _ => throw new ArgumentOutOfRangeException(nameof(httpMethod), httpMethod, "Unsupported verb.")
         };
     }

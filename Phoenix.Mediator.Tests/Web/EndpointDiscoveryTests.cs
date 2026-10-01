@@ -996,43 +996,43 @@ public static class DiscoveryGroupHost<TMarker>
 {
     public sealed class PingEndpoints : BaseEndpointGroup
     {
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
             => app.MapGroup("discovery-explicit").Get("ping", static () => Results.Ok("pong"));
     }
 
     public sealed class RepeatedEndpoints : BaseEndpointGroup
     {
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
             => app.MapGroup("discovery-repeated").Get("ping", static () => Results.Ok("pong"));
     }
 
     public sealed class MixedEndpoints : BaseEndpointGroup
     {
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
             => app.MapGroup("discovery-mixed").Get("ping", static () => Results.Ok("pong"));
     }
 
     public sealed class PartialEndpoints : BaseEndpointGroup
     {
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
             => app.MapGroup("discovery-partial").Get("ping", static () => Results.Ok("pong"));
     }
 
     public sealed class RegistryEndpoints : BaseEndpointGroup
     {
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
             => app.MapGroup("discovery-registry").Get("ping", static () => Results.Ok("pong"));
     }
 
     public sealed class DynamicEndpoints : BaseEndpointGroup
     {
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
             => app.MapGroup("discovery-dynamic").Get("ping", static () => Results.Ok("pong"));
     }
 
     public sealed class NullEntryEndpoints : BaseEndpointGroup
     {
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
             => app.MapGroup("discovery-nullentry").Get("ping", static () => Results.Ok("pong"));
     }
 
@@ -1051,7 +1051,7 @@ public static class DiscoveryGroupHost<TMarker>
 
         public IUnregisteredDependency Dependency { get; }
 
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
             => app.MapGroup("discovery-needs-dependency").Get("ping", static () => Results.Ok("pong"));
     }
 
@@ -1067,35 +1067,35 @@ public static class DiscoveryGroupHost<TMarker>
 
     public sealed class OrdersEndpoints : BaseEndpointGroup
     {
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
         {
         }
     }
 
     public sealed class InvoiceArchiveEndpoints : BaseEndpointGroup
     {
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
         {
         }
     }
 
     public sealed class Reports : BaseEndpointGroup
     {
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
         {
         }
     }
 
     public sealed class Endpoints : BaseEndpointGroup
     {
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
         {
         }
     }
 
     public sealed class EndpointsArchive : BaseEndpointGroup
     {
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
         {
         }
     }
@@ -1104,7 +1104,7 @@ public static class DiscoveryGroupHost<TMarker>
     {
         public override string GroupName => "discovery-custom";
 
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
         {
         }
     }

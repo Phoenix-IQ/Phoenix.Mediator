@@ -526,7 +526,7 @@ public sealed class ValidatedRequestValidator : AbstractValidator<ValidatedReque
 
 public sealed class DiscoveredEndpoints : BaseEndpointGroup
 {
-    public override void Map(WebApplication app)
+    public override void Map(IEndpointRouteBuilder app)
     {
         app.MapGroup(GroupName)
             .Get("ping", () => Results.Ok("pong"));
@@ -547,7 +547,7 @@ public sealed class EmptyRequestHandler : IRequestHandler<EmptyRequest>
 
 public sealed class EmptyEndpoints : BaseEndpointGroup
 {
-    public override void Map(WebApplication app)
+    public override void Map(IEndpointRouteBuilder app)
     {
         app.MapGroup(GroupName)
             .Post("complete", async (ISender sender, EmptyRequest request, CancellationToken ct) =>
@@ -569,7 +569,7 @@ public sealed class ScopedDependencyEndpoints : BaseEndpointGroup
         WasConstructed = false;
     }
 
-    public override void Map(WebApplication app)
+    public override void Map(IEndpointRouteBuilder app)
     {
         app.MapGroup(GroupName)
             .Get("ready", () => Results.Ok("ready"));
@@ -595,7 +595,7 @@ public sealed class AsyncDisposableDependencyEndpoints : BaseEndpointGroup
         LastDependency = null;
     }
 
-    public override void Map(WebApplication app)
+    public override void Map(IEndpointRouteBuilder app)
     {
         app.MapGroup(GroupName)
             .Get("ready", () => Results.Ok("ready"));

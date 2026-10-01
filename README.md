@@ -130,10 +130,8 @@ public sealed class GreetingEndpoints : BaseEndpointGroup
 ```
 
 `MapEndpoints` hands each group a route group rather than the application, which is how the
-[shared route prefix and conventions](#shared-route-prefix-and-conventions) reach its endpoints. Groups written
-against earlier versions override `Map(WebApplication)` instead; they keep working unchanged, and moving one over
-usually means changing the parameter type and nothing else. Services a group needs while mapping (configuration, the
-environment) come in through its constructor.
+[shared route prefix and conventions](#shared-route-prefix-and-conventions) reach its endpoints. Services a group needs
+while mapping (configuration, the environment) come in through its constructor.
 
 Then map all groups in `Program.cs`:
 
@@ -179,10 +177,6 @@ app.MapEndpoints(new MapEndpointsOptions
 - The health endpoint is not prefixed.
 - Each group's endpoints are tagged with its `GroupName`, which is how OpenAPI tools group them, unless an endpoint
   (or `ConfigureEndpoints`) sets tags of its own. Set `TagEndpointsWithGroupName = false` to turn that off.
-- The settings reach groups that override `Map(IEndpointRouteBuilder)`. A group that still overrides
-  `Map(WebApplication)` maps directly on the application, so while `RoutePrefix` or `ConfigureEndpoints` is set,
-  `MapEndpoints` throws and names it: a shared `RequireAuthorization()` that silently skipped one group would leave
-  that group open.
 
 ### Duplicate routes
 
@@ -259,6 +253,8 @@ does.
 - `HttpResponseException` (or derived exceptions): returns `{"errors":[...]}` with mapped status code
 - An exception you mapped: the status you mapped it to (see [Mapping your own exceptions](#mapping-your-own-exceptions))
 - Unhandled exceptions: returns `500` with the configured unknown-error message
+- A request the client abandoned: ends with `499`, logged at `Debug`. A request timeout is rethrown instead, so
+  `UseRequestTimeouts` writes its `504`
 
 Unknown-error messages can be configured per consuming project in JSON. The middleware matches `Accept-Language` case-insensitively, including `ar`, `Arabic`, `en`, and `English`; if the header is missing, it uses `Default`/`DefaultLanguage`, then English.
 
@@ -335,7 +331,6 @@ The common-exception mappings keep their old levels, because those exceptions us
 These helpers:
 - Add default OpenAPI responses (`401`, `403`, `400`, `500`)
 - Infer success response metadata from request type (`IRequest<T>` => `200`, `IRequest` => configured empty response status)
-- Allow explicit response metadata via `ResponseDto`
 
 ## File uploads (multipart)
 
@@ -635,6 +630,24 @@ Notes:
   endpoint that returns an `IResult` itself is left alone.
 - **The error body for a returned `ErrorResponse` always has a trace id.** Without an `Activity` it falls back to
   `HttpContext.TraceIdentifier`, like the exception middleware; it used to be `null`.
+- **`BaseEndpointGroup.Map(WebApplication)` is removed** — a breaking change, made in a minor release. Groups override
+  `Map(IEndpointRouteBuilder)` (namespace `Microsoft.AspNetCore.Routing`), which is now abstract:
+  `public override void Map(IEndpointRouteBuilder app)`. Usually only the parameter type changes, along with that of
+  any helper method the group passes `app` to. A group that used `app.Configuration` or `app.Environment` takes
+  `IConfiguration` or `IWebHostEnvironment` in its constructor instead. Every group is now mapped under a route group, so
+  `RoutePrefix` and `ConfigureEndpoints` reach all of them, and their endpoints are tagged with the group's `GroupName`
+  unless they set tags of their own: OpenAPI tools such as Swagger UI then list them under that name. Set
+  `TagEndpointsWithGroupName = false` to keep them untagged.
+- **`ResponseDto` is removed**, with the `responseDtos` parameter of the endpoint helpers and the
+  `Phoenix.Mediator.Web.Dtos` namespace — a breaking change, made in a minor release. The helpers document the success
+  response the way they did when no `ResponseDto` was passed: from the request the delegate takes. Delete the
+  `ResponseDto` arguments and `using Phoenix.Mediator.Web.Dtos;`. To document another response, chain ASP.NET Core's
+  `.Produces<T>(statusCode)` on the endpoint.
+- **A client that disconnects no longer leaves an unhandled exception.** The exception-handling middleware ends the
+  request with `499`, logged at `Debug`, instead of rethrowing the cancellation: Sentry's ASP.NET Core middleware, which
+  sits outside it, reported every disconnect as an unhandled error. A request timeout is still rethrown, so
+  `UseRequestTimeouts` writes its `504`. Only `UseRequestTimeouts` is told apart from a disconnect: a timeout
+  middleware of your own that cancels `RequestAborted` now sees the request end with `499` instead of the exception.
 
 ### 2.4.0
 
@@ -674,8 +687,8 @@ Most apps upgrade without code changes; the bullets below that can need one say 
 - **New `UnauthorizedException`, `ForbiddenException` and `ConflictException`.** A project that defines its own types
   with those names and imports `Phoenix.Mediator.Exceptions` gets an ambiguous-name error: delete its own if they only
   set the status, or qualify the name.
-- **`BaseEndpointGroup.Map(IEndpointRouteBuilder)`** is the overload to override. `Map(WebApplication)` keeps working
-  on its own, but not together with `RoutePrefix` or `ConfigureEndpoints`.
+- **`BaseEndpointGroup.Map(IEndpointRouteBuilder)`** is the overload to override. `Map(WebApplication)` (removed in
+  2.5.0) keeps working on its own, but not together with `RoutePrefix` or `ConfigureEndpoints`.
 
 ### 2.2.0
 
@@ -693,7 +706,7 @@ Most apps upgrade without code changes; the bullets below that can need one say 
   Pass roles as separate arguments for OR semantics.
 - **Cancelled requests are no longer turned into `500`.** The exception-handling middleware rethrows cancellation
   when the request was aborted, so `UseRequestTimeouts` can write its `504` and client disconnects stop filling the
-  error log.
+  error log. (Since 2.5.0 only a timeout is rethrown; a disconnect ends with `499`.)
 - **Framework bad requests keep their status code.** Malformed JSON, missing required parameters, invalid
   antiforgery tokens and oversized forms return their real status (`400`, `413`, ...) with the standard
   `{"errors":[...],"traceId":"..."}` body, instead of `500` in Development.

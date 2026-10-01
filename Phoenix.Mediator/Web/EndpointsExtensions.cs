@@ -12,7 +12,6 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Phoenix.Mediator.Abstractions;
 using Phoenix.Mediator.Mediator;
-using Phoenix.Mediator.Web.Dtos;
 using Phoenix.Mediator.Web.Middlewares;
 using Phoenix.Mediator.Wrappers;
 using System.Reflection;
@@ -137,9 +136,8 @@ public static class EndpointsExtensions
             .Distinct();
 
         // Every group is mapped under this one route group, so the prefix and the shared conventions are set once and
-        // reach everything below it. Created on first use: an app whose groups all map on the application itself gets
-        // no extra group at all, and so exactly the endpoints it got before.
-        RouteGroupBuilder? root = null;
+        // reach everything below it.
+        var root = CreateRootGroup(app, options);
 
         foreach (var type in endpointGroupTypes)
         {
@@ -149,24 +147,6 @@ public static class EndpointsExtensions
             try
             {
                 var instance = (BaseEndpointGroup)ActivatorUtilities.CreateInstance(scope.ServiceProvider, type);
-
-                if (instance.UsesLegacyMap)
-                {
-                    // Mapped on the application itself, so the shared settings cannot reach it. Silently skipping
-                    // a shared RequireAuthorization() would leave this group's endpoints open.
-                    if (options.HasSharedEndpointSettings)
-                    {
-                        throw new InvalidOperationException(
-                            $"Endpoint group '{type.FullName}' overrides Map(WebApplication), which maps its endpoints on the application " +
-                            "itself, so MapEndpointsOptions.RoutePrefix and ConfigureEndpoints cannot apply to them. Override " +
-                            "Map(IEndpointRouteBuilder) instead; usually only the parameter type changes.");
-                    }
-
-                    instance.Map(app);
-                    continue;
-                }
-
-                root ??= CreateRootGroup(app, options);
 
                 var group = root.MapGroup(string.Empty);
                 if (options.TagEndpointsWithGroupName)
@@ -253,7 +233,7 @@ public static class EndpointsExtensions
             ex.Types.Length));
     }
 
-    private static RouteHandlerBuilder AddResponses(this RouteHandlerBuilder handler, IServiceProvider services, Delegate endpointHandler, ResponseDto[]? responses)
+    private static RouteHandlerBuilder AddResponses(this RouteHandlerBuilder handler, IServiceProvider services, Delegate endpointHandler)
     {
         var emptyResponseStatusCode = GetConfiguredEmptyResponseStatusCode(services);
         handler.MapResultToApiResult(endpointHandler, emptyResponseStatusCode);
@@ -263,43 +243,34 @@ public static class EndpointsExtensions
         handler.Produces<ErrorsResponse>(statusCode: 400, contentType: "application/json");
         handler.Produces<ErrorsResponse>(statusCode: 500, contentType: "application/json");
 
-        // Success responses:
-        // - Prefer explicit responseDtos when provided.
-        // - Otherwise infer from the IRequest/IRequest<TResponse> parameter on the delegate.
-        var successResponses = (responses is { Length: > 0 })
-            ? responses
-            : InferSuccessResponses(endpointHandler, emptyResponseStatusCode);
+        // The success response, inferred from the IRequest/IRequest<TResponse> parameter on the delegate.
+        if (InferSuccessResponse(endpointHandler, emptyResponseStatusCode) is not { } success)
+            return handler;
 
-        if (successResponses is { Length: > 0 })
+        if (success.Type is null)
+            handler.Produces(success.StatusCode);
+        else
+            handler.Produces(success.StatusCode, success.Type);
+
+        // Minimal APIs infer a 200 response of their own from the delegate's return type (Task<SingleResponse<T>>,
+        // Task<object?>). It precedes the one declared above, which a convention adds, so when ours is a 200 it is the
+        // last one. The inferred one goes when ours is not a 200, when it has no schema, or when it repeats our type.
+        // It stays only for a different type: the delegate's value is what the mapping writes.
+        var declaresOk = success.StatusCode == StatusCodes.Status200OK;
+        handler.Add(endpointBuilder =>
         {
-            foreach (var r in successResponses)
+            var responses200 = endpointBuilder.Metadata
+                .OfType<IProducesResponseTypeMetadata>()
+                .Where(m => m.StatusCode == StatusCodes.Status200OK)
+                .ToArray();
+            var declared = declaresOk ? responses200[^1] : null;
+
+            foreach (var inferred in declaresOk ? responses200[..^1] : responses200)
             {
-                if (r.Type is null)
-                    handler.Produces(r.StatusCode);
-                else
-                    handler.Produces(r.StatusCode, r.Type);
+                if (declared is null || HasNoSchema(inferred.Type) || declared.Type == inferred.Type)
+                    endpointBuilder.Metadata.Remove(inferred);
             }
-
-            // Minimal APIs infer a 200 response of their own from the delegate's return type (Task<SingleResponse<T>>,
-            // Task<object?>). It precedes the 200s declared above, which conventions add, so the last ones are ours.
-            // The inferred one goes when no 200 is declared, when it has no schema, or when it repeats a declared type.
-            // It stays only for a different type: the delegate's value is what the mapping writes.
-            var declared200Count = successResponses.Count(r => r.StatusCode == StatusCodes.Status200OK);
-            handler.Add(endpointBuilder =>
-            {
-                var responses200 = endpointBuilder.Metadata
-                    .OfType<IProducesResponseTypeMetadata>()
-                    .Where(m => m.StatusCode == StatusCodes.Status200OK)
-                    .ToArray();
-                var declared = responses200[^declared200Count..];
-
-                foreach (var inferred in responses200[..^declared200Count])
-                {
-                    if (declared.Length == 0 || HasNoSchema(inferred.Type) || declared.Any(d => d.Type == inferred.Type))
-                        endpointBuilder.Metadata.Remove(inferred);
-                }
-            });
-        }
+        });
         return handler;
     }
 
@@ -338,11 +309,11 @@ public static class EndpointsExtensions
         return typeof(IResult).IsAssignableFrom(returnType);
     }
 
-    private static ResponseDto[]? InferSuccessResponses(Delegate endpointHandler, EmptyResponseStatusCode emptyResponseStatusCode)
+    private static (int StatusCode, Type? Type)? InferSuccessResponse(Delegate endpointHandler, EmptyResponseStatusCode emptyResponseStatusCode)
     {
         // Typical minimal-API pattern:
         // (ISender sender, TRequest request, CancellationToken ct) => await sender.Send(request, ct)
-        // We infer OpenAPI success responses based on the request type:
+        // We infer the OpenAPI success response from the request type:
         // - IRequest<TResponse> => 200 with schema = TResponse
         // - IRequest (no response) => configured empty response status code
         var requestType = endpointHandler.Method
@@ -362,8 +333,8 @@ public static class EndpointsExtensions
 
         // IMPORTANT: do NOT advertise 204 for response requests; Swagger would show 200+204 even when you always return a body.
         return responseType is not null
-            ? [new ResponseDto(200, responseType)]
-            : [new ResponseDto((int)emptyResponseStatusCode, null)];
+            ? (StatusCodes.Status200OK, responseType)
+            : ((int)emptyResponseStatusCode, null);
     }
 
     private static EmptyResponseStatusCode GetConfiguredEmptyResponseStatusCode(IServiceProvider services)
@@ -375,46 +346,46 @@ public static class EndpointsExtensions
     // --------------------
     // GET
     // --------------------
-    public static RouteHandlerBuilder Get(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
+    public static RouteHandlerBuilder Get(this IEndpointRouteBuilder builder, string pattern, Delegate handler)
     {
         return builder.MapGet(pattern, handler)
-            .AddResponses(builder.ServiceProvider, handler, responseDtos);
+            .AddResponses(builder.ServiceProvider, handler);
     }
 
     // --------------------
     // POST
     // --------------------
-    public static RouteHandlerBuilder Post(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
+    public static RouteHandlerBuilder Post(this IEndpointRouteBuilder builder, string pattern, Delegate handler)
     {
         return builder.MapPost(pattern, handler)
-            .AddResponses(builder.ServiceProvider, handler, responseDtos);
+            .AddResponses(builder.ServiceProvider, handler);
     }
 
     // --------------------
     // PUT
     // --------------------
-    public static RouteHandlerBuilder Put(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
+    public static RouteHandlerBuilder Put(this IEndpointRouteBuilder builder, string pattern, Delegate handler)
     {
         return builder.MapPut(pattern, handler)
-            .AddResponses(builder.ServiceProvider, handler, responseDtos);
+            .AddResponses(builder.ServiceProvider, handler);
     }
 
     // --------------------
     // DELETE
     // --------------------
-    public static RouteHandlerBuilder Delete(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
+    public static RouteHandlerBuilder Delete(this IEndpointRouteBuilder builder, string pattern, Delegate handler)
     {
         return builder.MapDelete(pattern, handler)
-            .AddResponses(builder.ServiceProvider, handler, responseDtos);
+            .AddResponses(builder.ServiceProvider, handler);
     }
 
     // --------------------
     // PATCH
     // --------------------
-    public static RouteHandlerBuilder Patch(this IEndpointRouteBuilder builder, string pattern, Delegate handler, params ResponseDto[]? responseDtos)
+    public static RouteHandlerBuilder Patch(this IEndpointRouteBuilder builder, string pattern, Delegate handler)
     {
         return builder.MapPatch(pattern, handler)
-            .AddResponses(builder.ServiceProvider, handler, responseDtos);
+            .AddResponses(builder.ServiceProvider, handler);
     }
     // --------------------
     // POST MULTIPART
@@ -446,34 +417,33 @@ public static class EndpointsExtensions
     /// <param name="maxRequestBodySize">Maximum request body size in bytes. Applied to both the server limit and the multipart form limit.</param>
     /// <param name="timeoutSeconds">Request timeout in seconds; see the remarks about what enforces it.</param>
     /// <param name="disableAntiforgery">Pass <see langword="true"/> to opt out of antiforgery validation; see the remarks.</param>
-    /// <param name="responseDtos">Explicit OpenAPI success responses; inferred from the mediator request type when omitted.</param>
-    public static RouteHandlerBuilder PostMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = DefaultMaxMultipartBodySize, int timeoutSeconds = DefaultMultipartTimeoutSeconds, bool disableAntiforgery = false, params ResponseDto[]? responseDtos)
+    public static RouteHandlerBuilder PostMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = DefaultMaxMultipartBodySize, int timeoutSeconds = DefaultMultipartTimeoutSeconds, bool disableAntiforgery = false)
     {
         return builder.MapPost(pattern, handler)
-            .ConfigureMultiPart(builder.ServiceProvider, pattern, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery, responseDtos);
+            .ConfigureMultiPart(builder.ServiceProvider, pattern, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery);
     }
 
     // --------------------
     // PUT MULTIPART
     // --------------------
     /// <inheritdoc cref="PostMultiPart"/>
-    public static RouteHandlerBuilder PutMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = DefaultMaxMultipartBodySize, int timeoutSeconds = DefaultMultipartTimeoutSeconds, bool disableAntiforgery = false, params ResponseDto[]? responseDtos)
+    public static RouteHandlerBuilder PutMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = DefaultMaxMultipartBodySize, int timeoutSeconds = DefaultMultipartTimeoutSeconds, bool disableAntiforgery = false)
     {
         return builder.MapPut(pattern, handler)
-            .ConfigureMultiPart(builder.ServiceProvider, pattern, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery, responseDtos);
+            .ConfigureMultiPart(builder.ServiceProvider, pattern, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery);
     }
 
     /// <inheritdoc cref="PostMultiPart"/>
-    public static RouteHandlerBuilder PatchMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = DefaultMaxMultipartBodySize, int timeoutSeconds = DefaultMultipartTimeoutSeconds, bool disableAntiforgery = false, params ResponseDto[]? responseDtos)
+    public static RouteHandlerBuilder PatchMultiPart(this IEndpointRouteBuilder builder, string pattern, Delegate handler, long maxRequestBodySize = DefaultMaxMultipartBodySize, int timeoutSeconds = DefaultMultipartTimeoutSeconds, bool disableAntiforgery = false)
     {
         return builder.MapPatch(pattern, handler)
-            .ConfigureMultiPart(builder.ServiceProvider, pattern, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery, responseDtos);
+            .ConfigureMultiPart(builder.ServiceProvider, pattern, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery);
     }
 
-    private static RouteHandlerBuilder ConfigureMultiPart(this RouteHandlerBuilder route, IServiceProvider services, string pattern, Delegate handler, long maxRequestBodySize, int timeoutSeconds, bool disableAntiforgery, ResponseDto[]? responseDtos)
+    private static RouteHandlerBuilder ConfigureMultiPart(this RouteHandlerBuilder route, IServiceProvider services, string pattern, Delegate handler, long maxRequestBodySize, int timeoutSeconds, bool disableAntiforgery)
     {
         route
-            .AddResponses(services, handler, responseDtos)
+            .AddResponses(services, handler)
             .Accepts<IFormFileCollection>("multipart/form-data")
             .WithMetadata(new RequestSizeLimitAttribute(maxRequestBodySize))
             // The request size limit alone is not enough: form parsing has its own ceiling

@@ -12,7 +12,6 @@ using Phoenix.Mediator.Abstractions;
 using Phoenix.Mediator.Mediator;
 using Phoenix.Mediator.Tests.Infrastructure;
 using Phoenix.Mediator.Web;
-using Phoenix.Mediator.Web.Dtos;
 using Phoenix.Mediator.Wrappers;
 using System.Net;
 using Xunit;
@@ -883,107 +882,6 @@ public sealed class MultipartEndpointTests
         Assert.DoesNotContain(204, statusCodes);
     }
 
-    // An explicit list wins over inference: a 201 Created upload endpoint must not also advertise the 200
-    // that inference would have produced from IRequest<TResponse>.
-    [Fact]
-    public async Task PostMultiPart_ExplicitResponseDtos_ReplaceTheInferredSuccessResponse()
-    {
-        await using var app = CreateApp();
-
-        MapMultiPartWithResponses(
-            app,
-            "POST",
-            "multipart-explicit/created",
-            (MultipartUploadCommand command) => Results.Ok(),
-            new ResponseDto(201, typeof(MultipartUploadResult)));
-
-        var responses = ResponseMetadata(app, "multipart-explicit/created");
-
-        Assert.Contains(responses, static metadata => metadata.StatusCode == 201 && metadata.Type == typeof(MultipartUploadResult));
-        Assert.DoesNotContain(200, ProducedStatusCodes(app, "multipart-explicit/created"));
-    }
-
-    [Theory]
-    [InlineData("POST")]
-    [InlineData("PUT")]
-    [InlineData("PATCH")]
-    public async Task MultiPartHelpers_DeclareEveryExplicitResponseDto(string httpMethod)
-    {
-        await using var app = CreateApp();
-        var pattern = $"multipart-explicit-many-{Slug(httpMethod)}/files";
-
-        MapMultiPartWithResponses(
-            app,
-            httpMethod,
-            pattern,
-            (MultipartUploadCommand command) => Results.Ok(),
-            new ResponseDto(201, typeof(MultipartUploadResult)),
-            new ResponseDto(202, null),
-            new ResponseDto(409, typeof(ErrorsResponse)));
-
-        var statusCodes = ProducedStatusCodes(app, pattern);
-
-        Assert.Contains(201, statusCodes);
-        Assert.Contains(202, statusCodes);
-        Assert.Contains(409, statusCodes);
-        Assert.DoesNotContain(200, statusCodes);
-
-        // Explicit success responses replace the inferred one, not the default error responses: the pass
-        // that strips the inferred 200 removes 200 metadata, and a broader removal would take these with it.
-        Assert.Contains(400, statusCodes);
-        Assert.Contains(401, statusCodes);
-        Assert.Contains(403, statusCodes);
-        Assert.Contains(500, statusCodes);
-    }
-
-    // When the explicit list does declare a 200 it must survive: the removal pass exists only to strip an
-    // inferred 200 that nothing asked for.
-    [Fact]
-    public async Task PostMultiPart_ExplicitResponseDtoDeclaringOk_KeepsIt()
-    {
-        await using var app = CreateApp();
-
-        MapMultiPartWithResponses(
-            app,
-            "POST",
-            "multipart-explicit/ok",
-            (MultipartEmptyCommand command) => Task.FromResult<object?>(null),
-            new ResponseDto(200, typeof(MultipartUploadResult)));
-
-        Assert.Contains(
-            ResponseMetadata(app, "multipart-explicit/ok"),
-            static metadata => metadata.StatusCode == 200 && metadata.Type == typeof(MultipartUploadResult));
-    }
-
-    // A params array can arrive as null as well as empty, and the helper has to treat both as "nothing
-    // was specified" rather than throwing on the length check.
-    [Fact]
-    public async Task PostMultiPart_NullResponseDtos_FallsBackToInference()
-    {
-        await using var app = CreateApp();
-
-        app.PostMultiPart("multipart-dtos/null", (MultipartUploadCommand command) => Results.Ok(), responseDtos: null);
-
-        Assert.Contains(
-            ResponseMetadata(app, "multipart-dtos/null"),
-            static metadata => metadata.StatusCode == 200 && metadata.Type == typeof(MultipartUploadResult));
-    }
-
-    [Fact]
-    public async Task PostMultiPart_EmptyResponseDtos_FallsBackToInference()
-    {
-        await using var app = CreateApp();
-
-        app.PostMultiPart(
-            "multipart-dtos/empty",
-            (MultipartUploadCommand command) => Results.Ok(),
-            responseDtos: Array.Empty<ResponseDto>());
-
-        Assert.Contains(
-            ResponseMetadata(app, "multipart-dtos/empty"),
-            static metadata => metadata.StatusCode == 200 && metadata.Type == typeof(MultipartUploadResult));
-    }
-
     // ---------------------------------------------------------------------------------------
     // End-to-end shape
     // ---------------------------------------------------------------------------------------
@@ -1019,8 +917,7 @@ public sealed class MultipartEndpointTests
 
     // Every optional argument at once. Each is covered alone above; what this adds is that they do not
     // interfere - in particular that taking the disableAntiforgery branch does not skip the rest of the
-    // configuration, and that the params ResponseDto[] sitting last in the signature cannot swallow an
-    // argument meant for one of the parameters before it.
+    // configuration, the inferred success response included.
     [Theory]
     [InlineData("POST")]
     [InlineData("PUT")]
@@ -1037,8 +934,7 @@ public sealed class MultipartEndpointTests
             (MultipartUploadCommand command) => Results.Ok(),
             maxRequestBodySize: 12_345_678,
             timeoutSeconds: 321,
-            disableAntiforgery: true,
-            responseDtos: new[] { new ResponseDto(201, typeof(MultipartUploadResult)) });
+            disableAntiforgery: true);
 
         var endpoint = app.Endpoint(pattern);
 
@@ -1049,8 +945,7 @@ public sealed class MultipartEndpointTests
         Assert.False(endpoint.Metadata.GetMetadata<IAntiforgeryMetadata>()!.RequiresValidation);
         Assert.Contains(
             ResponseMetadata(app, pattern),
-            static metadata => metadata.StatusCode == 201 && metadata.Type == typeof(MultipartUploadResult));
-        Assert.DoesNotContain(200, ProducedStatusCodes(app, pattern));
+            static metadata => metadata.StatusCode == 200 && metadata.Type == typeof(MultipartUploadResult));
     }
 
     // The helpers return the RouteHandlerBuilder so the caller can keep configuring the same route -
@@ -1220,22 +1115,12 @@ public sealed class MultipartEndpointTests
         Delegate handler,
         long maxRequestBodySize,
         int timeoutSeconds,
-        bool disableAntiforgery,
-        params ResponseDto[] responseDtos)
+        bool disableAntiforgery)
         => httpMethod switch
         {
-            "POST" => builder.PostMultiPart(pattern, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery, responseDtos),
-            "PUT" => builder.PutMultiPart(pattern, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery, responseDtos),
-            "PATCH" => builder.PatchMultiPart(pattern, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery, responseDtos),
-            _ => throw new ArgumentOutOfRangeException(nameof(httpMethod), httpMethod, "Unknown multipart helper.")
-        };
-
-    private static RouteHandlerBuilder MapMultiPartWithResponses(IEndpointRouteBuilder builder, string httpMethod, string pattern, Delegate handler, params ResponseDto[] responseDtos)
-        => httpMethod switch
-        {
-            "POST" => builder.PostMultiPart(pattern, handler, responseDtos: responseDtos),
-            "PUT" => builder.PutMultiPart(pattern, handler, responseDtos: responseDtos),
-            "PATCH" => builder.PatchMultiPart(pattern, handler, responseDtos: responseDtos),
+            "POST" => builder.PostMultiPart(pattern, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery),
+            "PUT" => builder.PutMultiPart(pattern, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery),
+            "PATCH" => builder.PatchMultiPart(pattern, handler, maxRequestBodySize, timeoutSeconds, disableAntiforgery),
             _ => throw new ArgumentOutOfRangeException(nameof(httpMethod), httpMethod, "Unknown multipart helper.")
         };
 

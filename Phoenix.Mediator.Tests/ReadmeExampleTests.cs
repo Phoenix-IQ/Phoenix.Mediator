@@ -32,7 +32,6 @@ using Phoenix.Mediator.Serilog;
 using Phoenix.Mediator.Tests.Infrastructure;
 using Phoenix.Mediator.Validation;
 using Phoenix.Mediator.Web;
-using Phoenix.Mediator.Web.Dtos;
 using Phoenix.Mediator.Web.Middlewares;
 using Phoenix.Mediator.Wrappers;
 using Serilog;
@@ -582,17 +581,6 @@ public sealed class ReadmeExampleTests
         Assert.Equal(
             new[] { "readmegreeting" },
             app.Endpoint("readmegreeting/hello").Metadata.OfType<ITagsMetadata>().SelectMany(static metadata => metadata.Tags));
-    }
-
-    // "A group that still overrides Map(WebApplication) ... MapEndpoints throws and names it."
-    [Fact]
-    public async Task MapEndpoints_WithARoutePrefix_RefusesAGroupStillOnTheWebApplicationOverload()
-    {
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => StartSharedSettingsAppAsync(
-            new MapEndpointsOptions { RoutePrefix = "api" },
-            typeof(ReadmeHost<object>.ReadmeDuplicateUserEndpoints)));
-
-        Assert.Contains(typeof(ReadmeHost<object>.ReadmeDuplicateUserEndpoints).FullName!, exception.Message);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1224,22 +1212,6 @@ public sealed class ReadmeExampleTests
 
         Assert.Contains(advertised, statusCodes);
         Assert.DoesNotContain(notAdvertised, statusCodes);
-    }
-
-    // "Allow explicit response metadata via ResponseDto" - an explicit list replaces the inferred success
-    // response rather than being added next to it.
-    [Fact]
-    public async Task EndpointHelpers_PreferExplicitResponseDtosOverTheInferredSuccessResponse()
-    {
-        await using var app = CreateReadmeApp();
-
-        app.MapGroup("readme-explicit").Post("students", (ISender sender, ReadmeCreateStudentCommand command, CancellationToken ct) =>
-            sender.Send(command, ct), new ResponseDto(StatusCodes.Status201Created, typeof(SingleResponse<string>)));
-
-        var metadata = app.Endpoint("readme-explicit/students").Metadata.OfType<IProducesResponseTypeMetadata>().ToArray();
-
-        Assert.Equal(typeof(SingleResponse<string>), Assert.Single(metadata, m => m.StatusCode == StatusCodes.Status201Created).Type);
-        Assert.DoesNotContain(StatusCodes.Status200OK, metadata.Select(static m => m.StatusCode));
     }
 
     // A delegate with no mediator request parameter has nothing to infer from, so only the four error
@@ -2020,18 +1992,47 @@ public sealed class ReadmeExampleTests
     // startup" is asserted above in RequireRole_RejectsFlagsCombinations /
     // RequireRole_RejectsUndefinedEnumValues. Depth: ReviewFixTests.RequireRole_RejectsFlagsCombinationsAndUndefinedValues.
 
-    // "Cancelled requests are no longer turned into 500. The exception-handling middleware rethrows
-    // cancellation when the request was aborted, so UseRequestTimeouts can write its 504."
-    // Depth: ReviewFixTests.ExceptionHandlingMiddleware_RethrowsCancellation_WhenRequestWasAborted.
+    // "Cancelled requests are no longer turned into 500." 2.5.0 refined how: only a timeout is rethrown, and a
+    // client disconnect ends with 499 (asserted in the 2.5.0 test below).
+    // Depth: ReviewFixTests.ExceptionHandlingMiddleware_DoesNotReportCancellationAsAServerError_WhenRequestWasAborted.
     [Fact]
-    public async Task Upgrade_CancelledRequestsAreRethrownInsteadOfBecomingServerErrors()
+    public async Task Upgrade_CancelledRequestsAreNoLongerTurnedIntoServerErrors()
     {
         using var aborted = new CancellationTokenSource();
         await aborted.CancelAsync();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => RunExceptionMiddlewareAsync(
+        var response = await RunExceptionMiddlewareAsync(
             new OperationCanceledException(aborted.Token),
-            requestAborted: aborted.Token));
+            requestAborted: aborted.Token);
+
+        Assert.NotEqual(StatusCodes.Status500InternalServerError, response.StatusCode);
+    }
+
+    // README "Upgrading / 2.5.0", kept beside the 2.1.0 note it refines: "A client that disconnects no longer leaves
+    // an unhandled exception. The exception-handling middleware ends the request with 499 ... A request timeout is
+    // still rethrown, so UseRequestTimeouts writes its 504." Depth: ExceptionHandlingMiddlewareTests, the
+    // BehindUseRequestTimeouts tests.
+    [Fact]
+    public async Task Upgrade_AClientDisconnectEndsWith499AndATimeoutIsStillRethrown()
+    {
+        using var aborted = new CancellationTokenSource();
+        await aborted.CancelAsync();
+
+        var disconnect = await RunExceptionMiddlewareAsync(
+            new OperationCanceledException(aborted.Token),
+            requestAborted: aborted.Token);
+
+        Assert.Equal(StatusCodes.Status499ClientClosedRequest, disconnect.StatusCode);
+        Assert.Empty(disconnect.Body);
+
+        var timedOut = new DefaultHttpContext { RequestAborted = aborted.Token };
+        timedOut.Features.Set<IHttpRequestTimeoutFeature>(new TestRequestTimeoutFeature(aborted.Token));
+        var middleware = new ExceptionHandlingMiddleware(
+            _ => throw new OperationCanceledException(aborted.Token),
+            NullLogger<ExceptionHandlingMiddleware>.Instance,
+            new ConfigurationBuilder().Build());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => middleware.InvokeAsync(timedOut));
     }
 
     // A cancellation that is NOT an abort is still a server fault, so the exemption must not swallow every
@@ -2213,8 +2214,8 @@ public sealed class ReadmeExampleTests
 
     /// <summary>
     /// A started test-server app whose discovery sees only <paramref name="groups"/> (the quick start group by default):
-    /// the application name matches no assembly, so the older groups elsewhere in this assembly, which stay on the
-    /// WebApplication overload, are not mapped under the shared settings. Callers are signed in through the role header.
+    /// the application name matches no assembly, so the other groups elsewhere in this assembly are not mapped under
+    /// the shared settings. Callers are signed in through the role header.
     /// </summary>
     private static async Task<WebApplication> StartSharedSettingsAppAsync(MapEndpointsOptions options, params Type[] groups)
     {
@@ -2795,21 +2796,21 @@ public static class ReadmeHost<TMarker>
     /// <summary>README "Duplicate routes": the UserEndpoints half of "GET users/{id}" vs "GET users/{userId}".</summary>
     public sealed class ReadmeDuplicateUserEndpoints : BaseEndpointGroup
     {
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
             => app.MapGroup("readme-dupes").Get("{id}", (string id) => Results.Ok(id));
     }
 
     /// <summary>The AdminEndpoints half: the same route shape under a different parameter name.</summary>
     public sealed class ReadmeDuplicateAdminEndpoints : BaseEndpointGroup
     {
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
             => app.MapGroup("readme-dupes").Get("{userId}", (string userId) => Results.Ok(userId));
     }
 
     /// <summary>The README's Turkish-server example for GroupName. Maps nothing; only its name is asserted on.</summary>
     public sealed class ReadmeInvoiceEndpoints : BaseEndpointGroup
     {
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
         {
         }
     }

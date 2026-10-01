@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -188,4 +189,17 @@ internal static class ResultExecution
 internal sealed record ExecutedResult(int StatusCode, string? ContentType, string Body)
 {
     public JsonElement Json => JsonDocument.Parse(Body).RootElement.Clone();
+}
+
+/// <summary>
+/// The feature <c>UseRequestTimeouts</c> sets on a request it times. Its token fires on the timeout alone, which is how
+/// the exception middleware tells a timeout from a client disconnect.
+/// </summary>
+internal sealed class TestRequestTimeoutFeature(CancellationToken requestTimeoutToken) : IHttpRequestTimeoutFeature
+{
+    public CancellationToken RequestTimeoutToken { get; } = requestTimeoutToken;
+
+    public void DisableTimeout()
+    {
+    }
 }

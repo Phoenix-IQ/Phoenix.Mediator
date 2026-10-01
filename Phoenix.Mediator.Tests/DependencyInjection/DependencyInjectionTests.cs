@@ -710,7 +710,7 @@ public sealed class DiRegistrationTests
     }
 
     // The endpoint helpers cast this enum straight to an int for the OpenAPI success response
-    // (`new ResponseDto((int)emptyResponseStatusCode, null)`). Dropping the explicit values — reordering
+    // (`(int)emptyResponseStatusCode`). Dropping the explicit values — reordering
     // the members, or letting them default to 0 and 1 — would still pass the options validator and would
     // advertise "0" as the status code of every command endpoint.
     [Fact]

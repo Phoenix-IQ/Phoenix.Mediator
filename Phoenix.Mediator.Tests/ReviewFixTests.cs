@@ -161,10 +161,11 @@ public sealed class ReviewFixTests
         Assert.True(document.RootElement.TryGetProperty("traceId", out _));
     }
 
-    // Finding 22: a cancelled request must not be reported as a server error, so that
-    // UseRequestTimeouts can still write its 504.
+    // Finding 22: a cancelled request must not be reported as a server error. A client disconnect ends
+    // with 499; a request timeout is rethrown, so UseRequestTimeouts can still write its 504 (covered in
+    // ExceptionHandlingMiddlewareTests).
     [Fact]
-    public async Task ExceptionHandlingMiddleware_RethrowsCancellation_WhenRequestWasAborted()
+    public async Task ExceptionHandlingMiddleware_DoesNotReportCancellationAsAServerError_WhenRequestWasAborted()
     {
         using var aborted = new CancellationTokenSource();
         await aborted.CancelAsync();
@@ -176,7 +177,9 @@ public sealed class ReviewFixTests
         RequestDelegate next = _ => throw new OperationCanceledException(aborted.Token);
         var middleware = new ExceptionHandlingMiddleware(next, recorder.CreateLogger<ExceptionHandlingMiddleware>(), new ConfigurationBuilder().Build());
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => middleware.InvokeAsync(context));
+        await middleware.InvokeAsync(context);
+
+        Assert.Equal(StatusCodes.Status499ClientClosedRequest, context.Response.StatusCode);
         Assert.Empty(recorder.Warnings);
     }
 
@@ -338,12 +341,12 @@ public sealed class OpenGenericHandler<T> : IRequestHandler<OpenGenericRequest<T
 // Same for endpoint groups: MapEndpoints must skip this instead of failing at startup.
 public class GenericEndpointGroup<TEntity> : BaseEndpointGroup
 {
-    public override void Map(WebApplication app) { }
+    public override void Map(IEndpointRouteBuilder app) { }
 }
 
 public sealed class InvoiceEndpoints : BaseEndpointGroup
 {
-    public override void Map(WebApplication app) { }
+    public override void Map(IEndpointRouteBuilder app) { }
 }
 
 public sealed class DuplicateHandlerRequest : IRequest<SingleResponse<string>> { }

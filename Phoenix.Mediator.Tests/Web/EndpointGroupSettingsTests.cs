@@ -17,13 +17,12 @@ namespace Phoenix.Mediator.Tests;
 
 /// <summary>
 /// <see cref="MapEndpointsOptions.RoutePrefix"/>, <see cref="MapEndpointsOptions.ConfigureEndpoints"/> and
-/// <see cref="MapEndpointsOptions.TagEndpointsWithGroupName"/>, which reach every group overriding
-/// <see cref="BaseEndpointGroup.Map(IEndpointRouteBuilder)"/>, and the rules for groups still on the
-/// <c>WebApplication</c> overload.
+/// <see cref="MapEndpointsOptions.TagEndpointsWithGroupName"/>, which reach every group through the route group
+/// <c>MapEndpoints</c> hands it.
 /// <para>
 /// The groups are nested in <see cref="EgHost{TMarker}"/> so default discovery never finds them, and the apps here use
 /// an application name that matches no assembly, so <c>MapEndpoints</c> maps exactly the groups each test passes in —
-/// not the older groups elsewhere in this assembly, which deliberately stay on the <c>WebApplication</c> overload.
+/// not the other groups elsewhere in this assembly.
 /// </para>
 /// </summary>
 public sealed class EndpointGroupSettingsTests
@@ -160,99 +159,15 @@ public sealed class EndpointGroupSettingsTests
         Assert.Equal("GET /api/students/{id:int}", Assert.Single(exception.Routes));
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // Groups on the WebApplication overload.
-    // ---------------------------------------------------------------------------------------------
-
-    // Every group written before this release: without shared settings it maps exactly as before, untagged.
+    // Code that maps a group by hand (tests, a composition helper) can still pass the application itself.
     [Fact]
-    public async Task MapEndpoints_ALegacyGroupWithoutSharedSettings_IsMappedAsBefore()
-    {
-        await using var app = await StartAsync(new MapEndpointsOptions(), typeof(EgHost<object>.LegacyEndpoints), typeof(EgHost<object>.CoursesEndpoints));
-        using var client = app.GetTestClient();
-
-        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("legacy/ping")).StatusCode);
-        Assert.Empty(Tags(app, "legacy/ping"));
-        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("courses/list")).StatusCode);
-    }
-
-    // A group written before the base class had Map(IEndpointRouteBuilder) can have a public method of that exact signature
-    // of its own. That method hides the new virtual instead of overriding it, so it must not be taken for the new overload:
-    // MapEndpoints would call the base virtual, which cannot map the group, and startup would fail on a group that worked.
-    [Fact]
-    public async Task MapEndpoints_ALegacyGroupWithItsOwnMapHelper_IsStillMappedThroughTheWebApplicationOverload()
-    {
-        await using var app = await StartAsync(new MapEndpointsOptions(), typeof(EgHost<object>.LegacyWithHelperEndpoints));
-        using var client = app.GetTestClient();
-
-        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("legacy-helper/ping")).StatusCode);
-    }
-
-    // A group mapped on the application itself cannot receive a prefix or shared conventions. Skipping it silently would
-    // leave its endpoints outside a shared RequireAuthorization(), so the combination fails at startup, naming the group.
-    [Fact]
-    public async Task MapEndpoints_ALegacyGroupWithARoutePrefix_Throws()
-    {
-        await using var app = CreateApp();
-
-        var exception = Assert.Throws<InvalidOperationException>(() => app.MapEndpoints(
-            new MapEndpointsOptions { RoutePrefix = "api" },
-            Groups(typeof(EgHost<object>.LegacyEndpoints))));
-
-        Assert.Contains(typeof(EgHost<object>.LegacyEndpoints).FullName!, exception.Message);
-        Assert.Contains("Map(IEndpointRouteBuilder)", exception.Message);
-    }
-
-    [Fact]
-    public async Task MapEndpoints_ALegacyGroupWithConfigureEndpoints_Throws()
-    {
-        await using var app = CreateApp();
-
-        Assert.Throws<InvalidOperationException>(() => app.MapEndpoints(
-            new MapEndpointsOptions { ConfigureEndpoints = static endpoints => endpoints.RequireAuthorization() },
-            Groups(typeof(EgHost<object>.LegacyEndpoints))));
-    }
-
-    // Map is no longer abstract, so a group that overrides neither overload compiles; it must fail loudly when mapped.
-    [Fact]
-    public async Task MapEndpoints_AGroupOverridingNeitherMap_ThrowsAClearError()
-    {
-        await using var app = CreateApp();
-
-        var exception = Assert.Throws<InvalidOperationException>(() => app.MapEndpoints(Groups(typeof(EgHost<object>.EmptyGroupEndpoints))));
-
-        Assert.Contains("must override Map(IEndpointRouteBuilder)", exception.Message);
-    }
-
-    // Code that maps a group by hand with the application (tests, a composition helper) keeps working for new groups.
-    [Fact]
-    public async Task Map_WithTheApplication_OnANewGroup_MapsItOnTheApplication()
+    public async Task Map_WithTheApplication_MapsTheGroupOnTheApplication()
     {
         await using var app = CreateApp();
 
         new EgHost<object>.StudentsEndpoints().Map(app);
 
         Assert.Contains(app.RouteEndpoints(), static endpoint => endpoint.RoutePattern.RawText == "students/{id:int}");
-    }
-
-    [Fact]
-    public async Task Map_WithARouteGroup_OnALegacyGroup_ExplainsWhyItCannot()
-    {
-        await using var app = CreateApp();
-
-        var exception = Assert.Throws<InvalidOperationException>(() => new EgHost<object>.LegacyEndpoints().Map(app.MapGroup("api")));
-
-        Assert.Contains("can only be mapped on the application", exception.Message);
-    }
-
-    [Fact]
-    public async Task Map_WithTheApplicationAsARouteBuilder_OnALegacyGroup_StillMapsIt()
-    {
-        await using var app = CreateApp();
-
-        new EgHost<object>.LegacyEndpoints().Map((IEndpointRouteBuilder)app);
-
-        Assert.Contains(app.RouteEndpoints(), static endpoint => endpoint.RoutePattern.RawText == "legacy/ping");
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -346,27 +261,5 @@ public static class EgHost<TMarker>
         {
             recorder.BuilderType = app.GetType();
         }
-    }
-
-    /// <summary>Written against the WebApplication overload, as every group before this release was.</summary>
-    public sealed class LegacyEndpoints : BaseEndpointGroup
-    {
-        public override void Map(WebApplication app)
-        {
-            app.MapGroup(GroupName).Get("ping", static () => Results.Ok("pong"));
-        }
-    }
-
-    public sealed class EmptyGroupEndpoints : BaseEndpointGroup;
-
-    /// <summary>
-    /// Written before the base class had Map(IEndpointRouteBuilder), with a public helper of that signature. Compiled
-    /// against 2.2.0 the helper is a separate method that merely hides the new virtual; <c>new</c> says the same here.
-    /// </summary>
-    public sealed class LegacyWithHelperEndpoints : BaseEndpointGroup
-    {
-        public override void Map(WebApplication app) => Map((IEndpointRouteBuilder)app);
-
-        public new void Map(IEndpointRouteBuilder app) => app.MapGroup("legacy-helper").Get("ping", static () => Results.Ok("pong"));
     }
 }

@@ -2,9 +2,12 @@ using System.Diagnostics;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -319,53 +322,50 @@ public sealed class ExceptionHandlingMiddlewareTests
     // Cancellation.
     // ---------------------------------------------------------------------------------------------
 
-    // A client that hangs up, or a request timeout, must keep flowing outwards: swallowing it here would
-    // hide the 504 that UseRequestTimeouts writes when it sees the exception.
+    // A client that hangs up has nobody left to answer, so the request ends here with 499. Rethrowing the cancellation
+    // handed it to the middleware further out, and Sentry's reported every disconnect as an unhandled error.
     [Fact]
-    public async Task InvokeAsync_OperationCanceledExceptionWhileRequestAborted_RethrowsTheSameException()
+    public async Task InvokeAsync_ClientDisconnect_EndsTheRequestWith499InsteadOfRethrowing()
     {
         using var aborted = new CancellationTokenSource();
         aborted.Cancel();
 
         var context = ExCreateContext();
         context.RequestAborted = aborted.Token;
-        var thrown = new OperationCanceledException(aborted.Token);
         var middleware = new ExceptionHandlingMiddleware(
-            _ => throw thrown,
+            _ => throw new OperationCanceledException(aborted.Token),
             NullLogger<ExceptionHandlingMiddleware>.Instance,
             ExConfiguration());
 
-        var caught = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => middleware.InvokeAsync(context));
+        await middleware.InvokeAsync(context);
 
-        Assert.Same(thrown, caught);
-        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        Assert.Equal(StatusCodes.Status499ClientClosedRequest, context.Response.StatusCode);
         Assert.Empty(ExBody(context));
     }
 
     // TaskCanceledException is what an awaited HttpClient/EF call actually throws on abort; it derives
     // from OperationCanceledException and must take the same path.
     [Fact]
-    public async Task InvokeAsync_TaskCanceledExceptionWhileRequestAborted_IsRethrownToo()
+    public async Task InvokeAsync_TaskCanceledExceptionOnClientDisconnect_EndsWith499Too()
     {
         using var aborted = new CancellationTokenSource();
         aborted.Cancel();
 
         var context = ExCreateContext();
         context.RequestAborted = aborted.Token;
-        var thrown = new TaskCanceledException("ex-await-cancelled");
         var middleware = new ExceptionHandlingMiddleware(
-            _ => throw thrown,
+            _ => throw new TaskCanceledException("ex-await-cancelled"),
             NullLogger<ExceptionHandlingMiddleware>.Instance,
             ExConfiguration());
 
-        var caught = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => middleware.InvokeAsync(context));
+        await middleware.InvokeAsync(context);
 
-        Assert.Same(thrown, caught);
+        Assert.Equal(StatusCodes.Status499ClientClosedRequest, context.Response.StatusCode);
     }
 
     // Aborted requests are routine on a public API. Logging them above Debug would bury real failures.
     [Fact]
-    public async Task InvokeAsync_OperationCanceledExceptionWhileRequestAborted_LogsOnlyAtDebug()
+    public async Task InvokeAsync_ClientDisconnect_LogsOnlyAtDebug()
     {
         using var aborted = new CancellationTokenSource();
         aborted.Cancel();
@@ -378,15 +378,112 @@ public sealed class ExceptionHandlingMiddlewareTests
             ExLogger(recorder),
             ExConfiguration());
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => middleware.InvokeAsync(context));
+        await middleware.InvokeAsync(context);
 
         Assert.Empty(recorder.Warnings);
         Assert.Contains(recorder.Entries, entry => entry.Level == LogLevel.Debug
             && entry.Message.Contains($"Request cancelled for {ExRequestMethod} {ExRequestPath}"));
     }
 
-    // Without the RequestAborted guard this would also be rethrown, and a cancellation raised by the
-    // application's own code (a CancellationTokenSource of its own) would escape as an unhandled error.
+    // The status line is already on the wire, so a disconnect after that point only ends the request.
+    [Fact]
+    public async Task InvokeAsync_ClientDisconnectAfterTheResponseStarted_KeepsTheOriginalStatus()
+    {
+        using var aborted = new CancellationTokenSource();
+        aborted.Cancel();
+
+        var context = ExCreateContext();
+        context.Features.Set<IHttpResponseFeature>(new ExStartedResponseFeature
+        {
+            StatusCode = StatusCodes.Status206PartialContent
+        });
+        context.RequestAborted = aborted.Token;
+        var middleware = new ExceptionHandlingMiddleware(
+            _ => throw new OperationCanceledException(aborted.Token),
+            NullLogger<ExceptionHandlingMiddleware>.Instance,
+            ExConfiguration());
+
+        await middleware.InvokeAsync(context);
+
+        Assert.Equal(StatusCodes.Status206PartialContent, context.Response.StatusCode);
+    }
+
+    // A request timeout must keep flowing outwards: UseRequestTimeouts writes its 504 only when the cancellation
+    // reaches it. UseRequestTimeouts links RequestAborted to its timeout, so both are cancelled here.
+    [Fact]
+    public async Task InvokeAsync_RequestTimeout_RethrowsTheSameExceptionForUseRequestTimeouts()
+    {
+        using var timedOut = new CancellationTokenSource();
+        timedOut.Cancel();
+
+        var context = ExCreateContext();
+        context.Features.Set<IHttpRequestTimeoutFeature>(new TestRequestTimeoutFeature(timedOut.Token));
+        context.RequestAborted = timedOut.Token;
+        var thrown = new OperationCanceledException(timedOut.Token);
+        var middleware = new ExceptionHandlingMiddleware(
+            _ => throw thrown,
+            NullLogger<ExceptionHandlingMiddleware>.Instance,
+            ExConfiguration());
+
+        var caught = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => middleware.InvokeAsync(context));
+
+        Assert.Same(thrown, caught);
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        Assert.Empty(ExBody(context));
+    }
+
+    // A request under a timeout policy carries the timeout feature even when it is the client that went away. Only
+    // the feature's own token marks a timeout, so this disconnect still ends with 499.
+    [Fact]
+    public async Task InvokeAsync_ClientDisconnectBeforeTheTimeoutFires_EndsWith499()
+    {
+        using var aborted = new CancellationTokenSource();
+        aborted.Cancel();
+        using var pendingTimeout = new CancellationTokenSource();
+
+        var context = ExCreateContext();
+        context.Features.Set<IHttpRequestTimeoutFeature>(new TestRequestTimeoutFeature(pendingTimeout.Token));
+        context.RequestAborted = aborted.Token;
+        var middleware = new ExceptionHandlingMiddleware(
+            _ => throw new OperationCanceledException(aborted.Token),
+            NullLogger<ExceptionHandlingMiddleware>.Instance,
+            ExConfiguration());
+
+        await middleware.InvokeAsync(context);
+
+        Assert.Equal(StatusCodes.Status499ClientClosedRequest, context.Response.StatusCode);
+    }
+
+    // The tests above fake the timeout feature. These two run behind the real UseRequestTimeouts, registered ahead of
+    // this middleware as apps do, so a framework change to how it sets the feature or links the tokens fails here.
+    [Fact]
+    public async Task InvokeAsync_BehindUseRequestTimeouts_ATimeoutStillEndsWith504()
+    {
+        // UseRequestTimeouts turns itself off while a debugger is attached, so there is no timeout to observe.
+        if (Debugger.IsAttached)
+            return;
+
+        var context = await ExRunBehindRequestTimeoutsAsync(TimeSpan.FromMilliseconds(50));
+
+        Assert.Equal(StatusCodes.Status504GatewayTimeout, context.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_BehindUseRequestTimeouts_AClientDisconnectEndsWith499()
+    {
+        using var client = new CancellationTokenSource();
+        var endpointStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var run = ExRunBehindRequestTimeoutsAsync(TimeSpan.FromMinutes(5), client.Token, endpointStarted);
+        await endpointStarted.Task;
+        await client.CancelAsync();
+        var context = await run;
+
+        Assert.Equal(StatusCodes.Status499ClientClosedRequest, context.Response.StatusCode);
+    }
+
+    // Without the RequestAborted guard this would be taken for a disconnect, and a cancellation raised by the
+    // application's own code (a CancellationTokenSource of its own) would vanish as a 499 instead of being reported.
     [Fact]
     public async Task InvokeAsync_OperationCanceledExceptionWhileRequestWasNotAborted_Writes500()
     {
@@ -409,7 +506,7 @@ public sealed class ExceptionHandlingMiddlewareTests
     }
 
     // Catch-arm ordering: a domain failure raised on a request that happens to be aborted is still a
-    // domain failure, so it keeps its own status instead of being rethrown as a cancellation.
+    // domain failure, so it keeps its own status instead of being handled as a cancellation.
     [Fact]
     public async Task InvokeAsync_HttpResponseExceptionOnAnAbortedRequest_IsStillTranslatedToItsStatus()
     {
@@ -429,7 +526,7 @@ public sealed class ExceptionHandlingMiddlewareTests
         Assert.Equal("ex-order-missing", ExFirstError(context));
     }
 
-    // The rethrow is guarded on OperationCanceledException specifically. A handler that fails for an
+    // The cancellation arm is guarded on OperationCanceledException specifically. A handler that fails for an
     // unrelated reason on a request that happens to be aborted is still a server fault: widening the
     // guard to the catch-all would drop those 500s and their stack traces on every disconnect.
     [Fact]
@@ -1153,6 +1250,40 @@ public sealed class ExceptionHandlingMiddlewareTests
                 Options.Create(options));
 
         await middleware.InvokeAsync(context);
+
+        return context;
+    }
+
+    /// <summary>
+    /// Runs the middleware behind the real <c>UseRequestTimeouts</c>, registered ahead of it as apps do, around an
+    /// endpoint that waits on <see cref="HttpContext.RequestAborted"/>. The wait is bounded, so a cancellation that
+    /// never comes fails the test instead of hanging it.
+    /// </summary>
+    private static async Task<DefaultHttpContext> ExRunBehindRequestTimeoutsAsync(
+        TimeSpan timeout,
+        CancellationToken clientAborted = default,
+        TaskCompletionSource? endpointStarted = null)
+    {
+        await using var services = new ServiceCollection()
+            .AddLogging()
+            .AddSingleton(ExConfiguration())
+            .AddRequestTimeouts(options => options.DefaultPolicy = new RequestTimeoutPolicy { Timeout = timeout })
+            .BuildServiceProvider();
+
+        var app = new ApplicationBuilder(services);
+        app.UseRequestTimeouts();
+        app.UseMiddleware<ExceptionHandlingMiddleware>();
+        app.Run(async context =>
+        {
+            endpointStarted?.TrySetResult();
+            await Task.Delay(TimeSpan.FromSeconds(10), context.RequestAborted);
+        });
+
+        var context = ExCreateContext();
+        context.RequestServices = services;
+        context.RequestAborted = clientAborted;
+
+        await app.Build()(context);
 
         return context;
     }

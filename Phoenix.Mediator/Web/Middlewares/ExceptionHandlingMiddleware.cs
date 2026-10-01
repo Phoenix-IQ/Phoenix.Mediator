@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -82,11 +83,19 @@ public sealed class ExceptionHandlingMiddleware
         }
         catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
         {
-            // The client disconnected, or a request timeout fired. Neither is a server fault: reporting it
-            // as a 500 error hides the 504 that UseRequestTimeouts writes when it sees the exception, and
-            // fills the error log on every aborted request. Let it flow to whoever is waiting for it.
+            // The client disconnected, or a request timeout fired. Neither is a server fault, and a 500 would fill the
+            // error log on every aborted request.
             logger.LogDebug("Request cancelled for {Method} {Path}", context.Request.Method, context.Request.Path);
-            throw;
+
+            // A timeout is rethrown, so UseRequestTimeouts writes its 504. The timeout feature's token fires on the
+            // timeout only; RequestAborted, which UseRequestTimeouts links to it, fires on a disconnect too.
+            if (context.Features.Get<IHttpRequestTimeoutFeature>()?.RequestTimeoutToken.IsCancellationRequested == true)
+                throw;
+
+            // A disconnect ends here: nobody is left to answer. Rethrown, it would reach the middleware further out,
+            // where error trackers such as Sentry's report every exception they see as unhandled.
+            if (!context.Response.HasStarted)
+                context.Response.StatusCode = StatusCodes.Status499ClientClosedRequest;
         }
         catch (BadHttpRequestException ex)
         {
