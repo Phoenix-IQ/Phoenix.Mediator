@@ -55,17 +55,3 @@ internal sealed class MediatorOptionsValidator : IValidateOptions<MediatorOption
             : ValidateOptionsResult.Fail(MediatorMessages.InvalidMissingHandlerHandling);
     }
 }
-
-/// <summary>
-/// Exposes the resolved <see cref="MediatorOptions"/> from an <c>ISender</c> implementation.
-/// The built-in mediator implements this so the Web helpers (e.g. <c>SendAsApiResult</c>) can
-/// honor the configured <see cref="MediatorOptions.EmptyResponseStatusCode"/>.
-/// <para>
-/// If you wrap/decorate <c>ISender</c>, implement this interface and forward to the inner sender;
-/// otherwise empty-response mapping falls back to <see cref="EmptyResponseStatusCode.NoContent"/>.
-/// </para>
-/// </summary>
-public interface IMediatorOptionsAccessor
-{
-    MediatorOptions Options { get; }
-}

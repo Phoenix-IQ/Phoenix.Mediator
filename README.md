@@ -9,8 +9,8 @@ It provides:
 - Request/handler abstractions (`IRequest`, `IRequest<TResponse>`, `IRequestHandler<...>`)
 - Endpoint-group discovery for Minimal APIs (`BaseEndpointGroup` + `MapEndpoints()`), with an optional shared route
   prefix and conventions
-- Consistent API result mapping (`SendAsApiResult()`, `ToApiResult()`) and error wrappers, with your own
-  exception-to-status mappings
+- Consistent API result mapping (endpoints return what `sender.Send(...)` returns; the endpoint helpers map it) and
+  error wrappers, with your own exception-to-status mappings
 - Pipeline behaviors: your own, written once for every request, plus opt-in FluentValidation and Sentry behaviors via
   companion packages
 - Opt-in Serilog/Sentry bootstrapping helpers via a companion package
@@ -124,7 +124,7 @@ public sealed class GreetingEndpoints : BaseEndpointGroup
     {
         app.MapGroup(GroupName)
             .Get("hello", async (ISender sender, [AsParameters] GetGreetingQuery query, CancellationToken ct) =>
-                await sender.SendAsApiResult(query, ct));
+                await sender.Send(query, ct));
     }
 }
 ```
@@ -219,13 +219,11 @@ Only endpoints mapped by the time `MapEndpoints` returns are checked. If you map
 
 ## Sending requests
 
-In endpoints, use `SendAsApiResult`. It sends the request through the mediator and maps the result to an `IResult` (see [Response and error behavior](#response-and-error-behavior)):
+In endpoints, return what `Send` returns, as the quick start's `GreetingEndpoints` does. The
+[endpoint helpers](#endpoint-helpers) (`Get`, `Post`, `Put`, `Patch`, `Delete` and the `...MultiPart` ones) turn it
+into the response (see [Response and error behavior](#response-and-error-behavior)).
 
-```csharp
-IResult result = await sender.SendAsApiResult(request, cancellationToken);
-```
-
-Everywhere else (services, background jobs, tests), use `Send` to get the handler's response itself:
+Everywhere else (services, background jobs, tests), `Send` gives you the handler's response itself:
 
 ```csharp
 // IRequest<TResponse>: the response type is inferred from the request.
@@ -243,16 +241,21 @@ own: when the base class is the type argument, as in `sender.Send<PaymentCommand
 `sender.Send(command)` on a variable of the base class, that handler runs. `sender.Send(query)` without type arguments
 always goes by the runtime type, so there a subclass needs a handler of its own.
 
-Avoid `(await sender.Send(...)).ToApiResult()` in endpoints:
-- `ToApiResult()` maps `null` to `204 No Content` without reading `EmptyResponseStatusCode`, but the [endpoint helpers](#endpoint-helpers) advertise the configured status in OpenAPI. With `EmptyResponseStatusCode.Ok`, the docs say `200` while the endpoint returns `204`.
-- For an `IRequest` (no response), `sender.Send(command, ct)` binds to the overload that returns a plain `Task`. There's no result to call `ToApiResult()` on, so the code doesn't compile.
-
 ## Response and error behavior
 
-Success responses come from `SendAsApiResult`. Errors come from the exception-handling middleware: `SendAsApiResult` doesn't catch exceptions, it lets them propagate. `MapEndpoints` registers the middleware by default; if you set `UseExceptionHandling = false`, call `app.UsePhoenixExceptionHandling()` yourself.
+Success responses come from the endpoint helpers, which map whatever the endpoint returns. Errors come from the
+exception-handling middleware: the helpers don't catch exceptions, they let them propagate. `MapEndpoints` registers
+the middleware by default; if you set `UseExceptionHandling = false`, call `app.UsePhoenixExceptionHandling()` yourself.
 
 - `IRequest<TResponse>`: returns JSON body (`200 OK`) on success
-- `IRequest` (no response): returns configured empty response status on success (`204 No Content` by default, or `200 OK`)
+- `IRequest` (no response), or a handler returning `null`: returns configured empty response status on success
+  (`204 No Content` by default, or `200 OK`)
+- A handler returning an `ErrorResponse`: its status, with the error body below
+- A handler or endpoint returning an `IResult`: that result, untouched
+
+Only the helpers map results: an endpoint mapped with ASP.NET Core's own `MapGet`/`MapPost` answers the way ASP.NET Core
+does.
+
 - `HttpResponseException` (or derived exceptions): returns `{"errors":[...]}` with mapped status code
 - An exception you mapped: the status you mapped it to (see [Mapping your own exceptions](#mapping-your-own-exceptions))
 - Unhandled exceptions: returns `500` with the configured unknown-error message
@@ -342,7 +345,7 @@ default OpenAPI responses.
 
 ```csharp
 group.PostMultiPart("documents", async (ISender sender, [FromForm] UploadDocumentCommand command, CancellationToken ct) =>
-    await sender.SendAsApiResult(command, ct), disableAntiforgery: true);
+    await sender.Send(command, ct), disableAntiforgery: true);
 ```
 
 Two things decide whether these endpoints work, and neither is specific to this package:
@@ -380,7 +383,7 @@ public record UpdateStudentCommand : IRequest<SingleResponse<int>>
 }
 
 group.Patch("{id}", (ISender sender, int id, UpdateStudentCommand command, CancellationToken ct) =>
-    sender.SendAsApiResult(command with { Id = id }, ct));
+    sender.Send(command with { Id = id }, ct));
 ```
 
 Positional records work the same way: `public record UpdateStudentCommand([FromRoute] int Id, string? Name) : IRequest<SingleResponse<int>>;`
@@ -413,7 +416,7 @@ alike, and every OpenAPI generator documents it correctly:
 public record UpdateStudentCommand([FromRoute] int Id, [FromBody] UpdateStudentBody Body) : IRequest<SingleResponse<int>>;
 
 group.Patch("{id}", (ISender sender, [AsParameters] UpdateStudentCommand command, CancellationToken ct) =>
-    sender.SendAsApiResult(command, ct));
+    sender.Send(command, ct));
 ```
 
 ## Authorization
@@ -616,10 +619,27 @@ Notes:
 
 ## Upgrading
 
-### 2.3.1
+### 2.5.0
 
-- **`fieldErrors` is removed** — a breaking change, made in a patch while 2.3.0 is new. Validation failures return the
-  `errors` + `traceId` body again, as in 2.2.0. Code that set or read `ErrorResponse.FieldErrors`,
+- **Endpoints return what `sender.Send(...)` returns; `SendAsApiResult` and `ToApiResult` are removed** — a breaking
+  change, made in a minor release. The endpoint helpers (`Get`, `Post`, `Put`, `Patch`, `Delete` and the
+  `...MultiPart` ones) now map the result themselves, the way both of those did. In endpoints, replace
+  `sender.SendAsApiResult(x, ct)` with `sender.Send(x, ct)`, and `(await sender.Send(x, ct)).ToApiResult()` with
+  `await sender.Send(x, ct)`. An endpoint mapped with ASP.NET Core's own `MapGet`/`MapPost` isn't mapped: switch it to
+  the helpers. `IMediatorOptionsAccessor` only existed for `SendAsApiResult` and is removed too; read the options from
+  `IOptions<MediatorOptions>`.
+- **Endpoints that already returned plain `Send` now answer like the rest.** A request with no response, or a handler
+  returning `null`, gets the configured empty status: `204` unless you set `EmptyResponseStatusCode.Ok`, where it used
+  to be `200`. A `string` response is written as JSON instead of plain text, and an `ErrorResponse` gets its own status
+  and the error body instead of a `200`. Set `EmptyResponseStatusCode.Ok` to keep `200` for empty responses. An
+  endpoint that returns an `IResult` itself is left alone.
+- **The error body for a returned `ErrorResponse` always has a trace id.** Without an `Activity` it falls back to
+  `HttpContext.TraceIdentifier`, like the exception middleware; it used to be `null`.
+
+### 2.4.0
+
+- **`fieldErrors` is removed** — a breaking change, made in a minor release while 2.3.0 is new. Validation failures
+  return the `errors` + `traceId` body again, as in 2.2.0. Code that set or read `ErrorResponse.FieldErrors`,
   `ErrorsResponse.FieldErrors` or `HttpResponseException.FieldErrors` no longer compiles: use `Errors`, which always
   held the same messages.
 - **`AddLogging()` applies the `Logging:LogLevel` section** (see [Log levels](#log-levels)). `UseSerilog` bypassed it, so
@@ -650,7 +670,7 @@ Most apps upgrade without code changes; the bullets below that can need one say 
 - **A request sent through a base class reaches its runtime type's handler** when the base class has no handler of
   its own; it used to fail. A missing handler is still an `InvalidOperationException`, with a clearer message.
 - **A FluentValidation `ValidationException` thrown by a handler is a `400`**, not a `500`, when `AddMediatorValidation`
-  is used. Validation failures carry `fieldErrors` (removed again in 2.3.1); every other error body is unchanged.
+  is used. Validation failures carry `fieldErrors` (removed again in 2.4.0); every other error body is unchanged.
 - **New `UnauthorizedException`, `ForbiddenException` and `ConflictException`.** A project that defines its own types
   with those names and imports `Phoenix.Mediator.Exceptions` gets an ambiguous-name error: delete its own if they only
   set the status, or qualify the name.

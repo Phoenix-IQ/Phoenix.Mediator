@@ -48,21 +48,6 @@ public sealed class PolymorphicDispatchTests
         Assert.Equal("get 7", response);
     }
 
-    // What an endpoint that accepts several commands of one family does. SendAsApiResult binds to its void overload
-    // with the base type, which used to fail the same way.
-    [Fact]
-    public async Task SendAsApiResult_ThroughAnAbstractBaseRecord_ReturnsTheEmptyResponseStatus()
-    {
-        using var scope = new SendScope();
-        var probe = new SendProbe();
-        PolyCommand command = new PolyDeleteCommand(probe);
-
-        var result = await scope.Sender.SendAsApiResult(command);
-
-        Assert.Equal(StatusCodes.Status204NoContent, ResultExecution.StatusCode(result));
-        Assert.Equal(new[] { "delete" }, probe.Entries);
-    }
-
     // The usual reason to hold commands as their base type: a batch of different commands, sent one by one.
     [Fact]
     public async Task Send_EachCommandOfAListDeclaredAsTheBase_ReachesItsOwnHandler()
@@ -255,17 +240,6 @@ public sealed class PolymorphicDispatchTests
 
         Assert.Equal("get 6", response);
         Assert.Equal(1, sender.ObjectSends);
-    }
-
-    [Fact]
-    public async Task SendAsApiResult_WithoutTypeArguments_MapsTheResponseToJson()
-    {
-        using var scope = new SendScope();
-
-        var executed = await ResultExecution.ExecuteAsync(await scope.Sender.SendAsApiResult(new PolyGetQuery(8)));
-
-        Assert.Equal(StatusCodes.Status200OK, executed.StatusCode);
-        Assert.Equal("\"get 8\"", executed.Body);
     }
 }
 

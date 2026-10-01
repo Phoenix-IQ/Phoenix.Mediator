@@ -1,31 +1,23 @@
 using Microsoft.AspNetCore.Http;
 using System.Diagnostics;
-using Phoenix.Mediator.Abstractions;
 using Phoenix.Mediator.Mediator;
 using Phoenix.Mediator.Wrappers;
 
 namespace Phoenix.Mediator.Web;
 
-public static class AutoResponseMappingExtensions
+/// <summary>
+/// What the endpoint helpers (<c>Get</c>, <c>Post</c>, ...) make of whatever an endpoint returns — usually what
+/// <c>sender.Send(...)</c> returned.
+/// </summary>
+internal static class AutoResponseMappingExtensions
 {
     /// <summary>
-    /// Maps mediator outputs to minimal-api results:
-    /// - null => 204 NoContent (ALWAYS — this overload does not consult <see cref="MediatorOptions.EmptyResponseStatusCode"/>)
+    /// Maps an endpoint's return value to the response:
+    /// - null => the configured empty-response status (<paramref name="emptyResponseStatusCode"/>)
     /// - IResult => passthrough (allows handlers/pipelines to return Results.* directly)
-    /// - ErrorResponse => uses ErrorResponse.HttpStatusCode
+    /// - ErrorResponse => uses ErrorResponse.HttpStatusCode, with the error body
     /// - otherwise => 200 OK (and body = value)
-    /// <para>
-    /// IMPORTANT: this overload cannot see the configured <see cref="MediatorOptions.EmptyResponseStatusCode"/>,
-    /// so void/empty requests always map to 204 here. To honor the configured empty-response status code
-    /// (e.g. 200 OK), call <see cref="SendAsApiResult(ISender, object, CancellationToken)"/> instead of
-    /// <c>sender.Send(...).ToApiResult()</c>.
-    /// </para>
     /// </summary>
-    public static IResult ToApiResult(this object? value)
-    {
-        return value.ToApiResult(EmptyResponseStatusCode.NoContent);
-    }
-
     public static IResult ToApiResult(this object? value, EmptyResponseStatusCode emptyResponseStatusCode)
     {
         return value switch
@@ -33,64 +25,10 @@ public static class AutoResponseMappingExtensions
             null => CreateEmptyResponseResult(emptyResponseStatusCode),
             IResult result => result,
             // Same body shape as the exception-handling middleware, trace id included.
-            ErrorResponse errors => Results.Json(new ErrorsResponse(errors.Errors, Activity.Current?.TraceId.ToString()), statusCode: (int)errors.HttpStatusCode),
+            ErrorResponse errors => new ErrorResponseResult(errors),
             // Always return JSON so Swagger/clients consistently get the documented content-type/schema.
             _ => Results.Json(value)
         };
-    }
-
-    /// <summary>
-    /// Sends a request through the mediator and maps the result to an <see cref="IResult"/>.
-    /// Use this in HTTP endpoint handlers instead of calling <c>sender.Send()</c> + <c>ToApiResult()</c> manually.
-    /// <para>
-    /// Exceptions are not caught here: they propagate to the exception-handling middleware
-    /// (<see cref="EndpointsExtensions.UsePhoenixExceptionHandling"/>, registered by <c>MapEndpoints</c> by default),
-    /// which turns them into error responses.
-    /// </para>
-    /// </summary>
-    public static async Task<IResult> SendAsApiResult(this ISender sender, object request, CancellationToken cancellationToken = default)
-    {
-        var result = await sender.Send(request, cancellationToken).ConfigureAwait(false);
-
-        // A null result means "no body", whether the request was void or its handler returned null. Both
-        // honor the configured empty-response status, so the response matches what OpenAPI advertises.
-        return result.ToApiResult(GetConfiguredEmptyResponseStatusCode(sender));
-    }
-
-    /// <summary>
-    /// Overload for a request with a response, <typeparamref name="TResponse"/> inferred from the request:
-    /// <c>sender.SendAsApiResult(query, ct)</c> binds here rather than to the <see cref="object"/> overload, so the
-    /// response is not boxed on its way through the mediator.
-    /// </summary>
-    public static async Task<IResult> SendAsApiResult<TResponse>(this ISender sender, IRequest<TResponse> request, CancellationToken cancellationToken = default)
-    {
-        var result = await sender.Send(request, cancellationToken).ConfigureAwait(false);
-        return result.ToApiResult(GetConfiguredEmptyResponseStatusCode(sender));
-    }
-
-    /// <summary>
-    /// Strongly-typed overload — no reflection, no boxing.
-    /// </summary>
-    public static async Task<IResult> SendAsApiResult<TRequest, TResponse>(this ISender sender, TRequest request, CancellationToken cancellationToken = default) where TRequest : IRequest<TResponse>
-    {
-        var result = await sender.Send<TRequest, TResponse>(request, cancellationToken).ConfigureAwait(false);
-        return result.ToApiResult(GetConfiguredEmptyResponseStatusCode(sender));
-    }
-
-    /// <summary>
-    /// Strongly-typed overload for void requests — no reflection, no boxing.
-    /// </summary>
-    public static async Task<IResult> SendAsApiResult<TRequest>(this ISender sender, TRequest request, CancellationToken cancellationToken = default) where TRequest : IRequest
-    {
-        await sender.Send(request, cancellationToken).ConfigureAwait(false);
-        return CreateEmptyResponseResult(GetConfiguredEmptyResponseStatusCode(sender));
-    }
-
-    private static EmptyResponseStatusCode GetConfiguredEmptyResponseStatusCode(ISender sender)
-    {
-        return sender is IMediatorOptionsAccessor accessor
-            ? accessor.Options.EmptyResponseStatusCode
-            : EmptyResponseStatusCode.NoContent;
     }
 
     private static IResult CreateEmptyResponseResult(EmptyResponseStatusCode statusCode)
@@ -103,4 +41,21 @@ public static class AutoResponseMappingExtensions
         };
     }
 
+    /// <summary>
+    /// An <see cref="ErrorResponse"/> written as the exception-handling middleware writes errors: its status, and an
+    /// <see cref="ErrorsResponse"/> body. The trace id is read when the response is written, so it falls back to
+    /// <see cref="HttpContext.TraceIdentifier"/> when the request has no <see cref="Activity"/>, as the middleware's does.
+    /// </summary>
+    private sealed class ErrorResponseResult(ErrorResponse response) : IResult, IStatusCodeHttpResult
+    {
+        public int? StatusCode => (int)response.HttpStatusCode;
+
+        public Task ExecuteAsync(HttpContext httpContext)
+        {
+            ArgumentNullException.ThrowIfNull(httpContext);
+
+            var traceId = Activity.Current?.TraceId.ToString() ?? httpContext.TraceIdentifier;
+            return Results.Json(new ErrorsResponse(response.Errors, traceId), statusCode: (int)response.HttpStatusCode).ExecuteAsync(httpContext);
+        }
+    }
 }

@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -124,22 +125,21 @@ public sealed class ReviewFixTests
 
     // Finding 28: a null response used to ignore the configured empty-response status.
     [Theory]
-    [InlineData(EmptyResponseStatusCode.Ok, StatusCodes.Status200OK)]
-    [InlineData(EmptyResponseStatusCode.NoContent, StatusCodes.Status204NoContent)]
-    public async Task SendAsApiResult_UsesConfiguredEmptyStatus_ForNullResponses(EmptyResponseStatusCode configured, int expectedStatusCode)
+    [InlineData(EmptyResponseStatusCode.Ok, HttpStatusCode.OK)]
+    [InlineData(EmptyResponseStatusCode.NoContent, HttpStatusCode.NoContent)]
+    public async Task Endpoint_NullResponse_UsesTheConfiguredEmptyStatus(EmptyResponseStatusCode configured, HttpStatusCode expectedStatusCode)
     {
-        var services = new ServiceCollection();
-        services.AddMediator(options => options.EmptyResponseStatusCode = configured, typeof(ReviewFixTests).Assembly);
+        var builder = TestApps.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddMediator(options => options.EmptyResponseStatusCode = configured, typeof(ReviewFixTests).Assembly);
+        await using var app = builder.Build();
+        app.Get("boxed", static (ISender sender, CancellationToken ct) => sender.Send((object)new NullResponseRequest(), ct));
+        app.Get("typed", static (ISender sender, CancellationToken ct) => sender.Send<NullResponseRequest, string?>(new NullResponseRequest(), ct));
+        await app.StartAsync();
+        using var client = app.GetTestClient();
 
-        using var provider = services.BuildServiceProvider(validateScopes: true);
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-
-        var boxed = await sender.SendAsApiResult(new NullResponseRequest());
-        var typed = await sender.SendAsApiResult<NullResponseRequest, string?>(new NullResponseRequest());
-
-        Assert.Equal(expectedStatusCode, Assert.IsAssignableFrom<IStatusCodeHttpResult>(boxed).StatusCode);
-        Assert.Equal(expectedStatusCode, Assert.IsAssignableFrom<IStatusCodeHttpResult>(typed).StatusCode);
+        Assert.Equal(expectedStatusCode, (await client.GetAsync("boxed")).StatusCode);
+        Assert.Equal(expectedStatusCode, (await client.GetAsync("typed")).StatusCode);
     }
 
     // Finding 20: framework bad requests were reported as 500 with no detail.

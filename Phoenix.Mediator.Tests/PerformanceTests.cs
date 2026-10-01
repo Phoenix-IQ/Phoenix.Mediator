@@ -353,41 +353,6 @@ public sealed class PerformanceTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// SendAsApiResult is what endpoints actually call, and its typed overloads carry the same
-    /// "no reflection, no boxing" promise. Measured end to end, including the IResult mapping.
-    /// </summary>
-    [Fact]
-    public async Task SendAsApiResult_TypedOverload_AllocatesLessPerSendThanTheObjectOverload()
-    {
-        using var provider = CreateSenderProvider();
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-        var request = new PerfEchoRequest("api-result");
-
-        // Both overloads must still produce the documented 200 + JSON body.
-        var typedResponse = await ResultExecution.ExecuteAsync(await sender.SendAsApiResult<PerfEchoRequest, string>(request));
-        var boxedResponse = await ResultExecution.ExecuteAsync(await sender.SendAsApiResult((object)request));
-        Assert.Equal(StatusCodes.Status200OK, typedResponse.StatusCode);
-        Assert.Equal(StatusCodes.Status200OK, boxedResponse.StatusCode);
-        Assert.Contains("api-result", typedResponse.Body, StringComparison.Ordinal);
-        Assert.Contains("api-result", boxedResponse.Body, StringComparison.Ordinal);
-
-        Action typed = () => sender.SendAsApiResult<PerfEchoRequest, string>(request).GetAwaiter().GetResult();
-        Action boxed = () => sender.SendAsApiResult((object)request).GetAwaiter().GetResult();
-
-        Warmup(WarmupIterations, typed);
-        Warmup(WarmupIterations, boxed);
-        var typedPerSend = AllocatedBytesPerOperation(MeasuredIterations, typed);
-        var boxedPerSend = AllocatedBytesPerOperation(MeasuredIterations, boxed);
-
-        output.WriteLine($"SendAsApiResult: typed {typedPerSend} B/call, object overload {boxedPerSend} B/call (difference {boxedPerSend - typedPerSend} B).");
-
-        Assert.True(
-            typedPerSend < boxedPerSend,
-            $"SendAsApiResult typed allocated {typedPerSend} B/call and the object overload {boxedPerSend} B/call.");
-    }
-
-    /// <summary>
     /// The documented exception to "prefer the generic overloads": a variable declared as the interface
     /// (<c>IRequest&lt;T&gt; query = ...</c>, a <c>List&lt;IRequest&gt;</c>, a factory return value) binds
     /// TRequest to the interface, and no handler is registered for an interface. The mediator detects that
@@ -940,7 +905,7 @@ public sealed class PerformanceTests(ITestOutputHelper output)
         await using var app = BuildApp();
 
         app.MapGroup("perf-metadata").Post("echo", static (ISender sender, PerfEchoRequest request, CancellationToken cancellationToken)
-            => sender.SendAsApiResult((object)request, cancellationToken));
+            => sender.Send((object)request, cancellationToken));
 
         var responses = ResponsesOf(app, "perf-metadata/echo");
 
@@ -974,7 +939,7 @@ public sealed class PerformanceTests(ITestOutputHelper output)
         await using var app = BuildApp(options => options.EmptyResponseStatusCode = configured);
 
         app.MapGroup("perf-empty").Post("command", static (ISender sender, PerfVoidRequest request, CancellationToken cancellationToken)
-            => sender.SendAsApiResult(request, cancellationToken));
+            => sender.Send(request, cancellationToken));
 
         var responses = ResponsesOf(app, "perf-empty/command");
 
@@ -1162,7 +1127,7 @@ public sealed class PerformanceTests(ITestOutputHelper output)
 
             var stopwatch = Stopwatch.StartNew();
             for (var i = 0; i < endpointCount; i++)
-                app.Post($"/{prefix}/{i}", static (ISender sender, PerfEchoRequest request) => sender.SendAsApiResult((object)request));
+                app.Post($"/{prefix}/{i}", static (ISender sender, PerfEchoRequest request) => sender.Send((object)request));
             stopwatch.Stop();
 
             if (stopwatch.Elapsed < best)

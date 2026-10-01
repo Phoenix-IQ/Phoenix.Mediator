@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
@@ -254,6 +255,9 @@ public static class EndpointsExtensions
 
     private static RouteHandlerBuilder AddResponses(this RouteHandlerBuilder handler, IServiceProvider services, Delegate endpointHandler, ResponseDto[]? responses)
     {
+        var emptyResponseStatusCode = GetConfiguredEmptyResponseStatusCode(services);
+        handler.MapResultToApiResult(endpointHandler, emptyResponseStatusCode);
+
         handler.Produces(statusCode: 401);
         handler.Produces(statusCode: 403);
         handler.Produces<ErrorsResponse>(statusCode: 400, contentType: "application/json");
@@ -264,7 +268,7 @@ public static class EndpointsExtensions
         // - Otherwise infer from the IRequest/IRequest<TResponse> parameter on the delegate.
         var successResponses = (responses is { Length: > 0 })
             ? responses
-            : InferSuccessResponses(endpointHandler, GetConfiguredEmptyResponseStatusCode(services));
+            : InferSuccessResponses(endpointHandler, emptyResponseStatusCode);
 
         if (successResponses is { Length: > 0 })
         {
@@ -276,24 +280,62 @@ public static class EndpointsExtensions
                     handler.Produces(r.StatusCode, r.Type);
             }
 
-            // Minimal APIs can infer a default 200 response from delegate return type
-            // (for example Task<object?>). Remove inferred 200 metadata when 200 is not declared.
-            var declares200 = successResponses.Any(r => r.StatusCode == StatusCodes.Status200OK);
-            if (!declares200)
+            // Minimal APIs infer a 200 response of their own from the delegate's return type (Task<SingleResponse<T>>,
+            // Task<object?>). It precedes the 200s declared above, which conventions add, so the last ones are ours.
+            // The inferred one goes when no 200 is declared, when it has no schema, or when it repeats a declared type.
+            // It stays only for a different type: the delegate's value is what the mapping writes.
+            var declared200Count = successResponses.Count(r => r.StatusCode == StatusCodes.Status200OK);
+            handler.Add(endpointBuilder =>
             {
-                handler.Add(endpointBuilder =>
-                {
-                    var metadataToRemove = endpointBuilder.Metadata
-                        .OfType<IProducesResponseTypeMetadata>()
-                        .Where(m => m.StatusCode == StatusCodes.Status200OK)
-                        .ToArray();
+                var responses200 = endpointBuilder.Metadata
+                    .OfType<IProducesResponseTypeMetadata>()
+                    .Where(m => m.StatusCode == StatusCodes.Status200OK)
+                    .ToArray();
+                var declared = responses200[^declared200Count..];
 
-                    foreach (var metadata in metadataToRemove)
-                        endpointBuilder.Metadata.Remove(metadata);
-                });
-            }
+                foreach (var inferred in responses200[..^declared200Count])
+                {
+                    if (declared.Length == 0 || HasNoSchema(inferred.Type) || declared.Any(d => d.Type == inferred.Type))
+                        endpointBuilder.Metadata.Remove(inferred);
+                }
+            });
         }
         return handler;
+    }
+
+    /// <summary>
+    /// Lets an endpoint return what the mediator returns — <c>(ISender sender, ...) =&gt; sender.Send(request, ct)</c> —
+    /// and answer with the responses its OpenAPI metadata describes: no result (a void request, or a handler returning
+    /// <see langword="null"/>) is the configured empty status, an <see cref="ErrorResponse"/> is its status with the error
+    /// body, and anything else is 200 with a JSON body, as <see cref="AutoResponseMappingExtensions.ToApiResult(object?, EmptyResponseStatusCode)"/>
+    /// maps them. A delegate that returns an <see cref="IResult"/> itself is left alone.
+    /// </summary>
+    private static void MapResultToApiResult(this RouteHandlerBuilder handler, Delegate endpointHandler, EmptyResponseStatusCode emptyResponseStatusCode)
+    {
+        if (ReturnsHttpResult(endpointHandler.Method.ReturnType))
+            return;
+
+        handler.AddEndpointFilter(async (context, next) =>
+        {
+            var result = await next(context).ConfigureAwait(false);
+
+            // A delegate returning void or Task hands its filters EmptyHttpResult: no result, like a handler returning null.
+            return (result is EmptyHttpResult ? null : result).ToApiResult(emptyResponseStatusCode);
+        });
+    }
+
+    private static bool HasNoSchema(Type? type)
+    {
+        return type is null || type == typeof(void) || typeof(IResult).IsAssignableFrom(type);
+    }
+
+    private static bool ReturnsHttpResult(Type returnType)
+    {
+        if (returnType.IsGenericType
+            && (returnType.GetGenericTypeDefinition() == typeof(Task<>) || returnType.GetGenericTypeDefinition() == typeof(ValueTask<>)))
+            returnType = returnType.GetGenericArguments()[0];
+
+        return typeof(IResult).IsAssignableFrom(returnType);
     }
 
     private static ResponseDto[]? InferSuccessResponses(Delegate endpointHandler, EmptyResponseStatusCode emptyResponseStatusCode)

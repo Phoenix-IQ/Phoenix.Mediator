@@ -1,9 +1,13 @@
 using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Phoenix.Mediator.Abstractions;
 using Phoenix.Mediator.Exceptions;
 using Phoenix.Mediator.Mediator;
@@ -16,154 +20,85 @@ using Xunit;
 namespace Phoenix.Mediator.Tests;
 
 /// <summary>
-/// Result mapping (<c>ToApiResult</c>, <c>SendAsApiResult</c>) and the response wrappers
-/// (<c>SingleResponse</c>, <c>MultiResponse</c>, <c>ErrorResponse</c>, <c>ErrorsResponse</c>,
+/// Result mapping (what the endpoint helpers make of what an endpoint, or <c>sender.Send(...)</c>, returns) and the
+/// response wrappers (<c>SingleResponse</c>, <c>MultiResponse</c>, <c>ErrorResponse</c>, <c>ErrorsResponse</c>,
 /// <c>HttpResponseException</c>).
 /// <para>
-/// Mapping assertions run the produced <see cref="IResult"/> the way the framework would, so the status
-/// code, content type and body are the ones a client actually receives — a result type alone says
-/// nothing about what gets written.
+/// Mapping assertions go through a real request, so the status code, content type and body are the ones a client
+/// actually receives — a result type alone says nothing about what gets written.
 /// </para>
 /// </summary>
 public sealed class MappingApiResultTests
 {
-    // The one documented error body is produced by two different code paths with two different
-    // serializers. The exception middleware pins camelCase; ToApiResult's ErrorResponse arm goes through
-    // Results.Json and so follows whatever naming policy the app configured. An app that turns the policy
-    // off therefore serves {"Errors":[...]} from a handler that RETURNS an ErrorResponse and
-    // {"errors":[...]} from a handler that THROWS on the very next endpoint, and only the second matches
-    // the Produces<ErrorsResponse> schema every endpoint advertises. Pinned rather than asserted as
-    // desirable: which serializer should win is an API-contract decision, and this test is here so the
-    // divergence cannot be changed or shipped unnoticed.
+    // ---------------------------------------------------------------------------------------------
+    // Endpoint helpers: how a returned value is written
+    // ---------------------------------------------------------------------------------------------
+
+    // The one documented error body is produced by two different code paths with two different serializers. The
+    // exception middleware pins camelCase; a RETURNED ErrorResponse goes through Results.Json and so follows whatever
+    // naming policy the app configured. An app that turns the policy off therefore serves {"Errors":[...]} from a
+    // handler that RETURNS an ErrorResponse and {"errors":[...]} from one that THROWS on the very next endpoint, and
+    // only the second matches the Produces<ErrorsResponse> schema every endpoint advertises. Pinned rather than asserted
+    // as desirable: which serializer should win is an API-contract decision, and this test is here so the divergence
+    // cannot be changed or shipped unnoticed.
     [Fact]
-    public async Task ErrorBody_IsCasedByTheAppPolicyThroughToApiResultButAlwaysCamelCaseFromTheMiddleware()
+    public async Task ErrorBody_IsCasedByTheAppPolicyWhenReturnedButAlwaysCamelCaseWhenThrown()
     {
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddMediator();
-        services.ConfigureHttpJsonOptions(static options => options.SerializerOptions.PropertyNamingPolicy = null);
-        using var provider = services.BuildServiceProvider();
+        await using var app = await StartAppAsync(
+            null,
+            static app =>
+            {
+                app.Get("returned", static () => new ErrorResponse(HttpStatusCode.NotFound, ["gone"]));
+                app.Get("thrown", static () => { throw new NotFoundException("gone"); });
+            },
+            static services => services.ConfigureHttpJsonOptions(static options => options.SerializerOptions.PropertyNamingPolicy = null));
 
-        var returned = await ResultExecution.ExecuteAsync(
-            ((object?)new ErrorResponse(HttpStatusCode.NotFound, ["gone"])).ToApiResult(),
-            provider);
-
-        var context = new DefaultHttpContext { RequestServices = provider };
-        context.Response.Body = new MemoryStream();
-        await new ExceptionHandlingMiddleware(
-                _ => throw new NotFoundException("gone"),
-                new RecordingLoggerProvider().CreateLogger<ExceptionHandlingMiddleware>(),
-                new ConfigurationBuilder().Build())
-            .InvokeAsync(context);
-
-        context.Response.Body.Position = 0;
-        var thrown = await new StreamReader(context.Response.Body).ReadToEndAsync();
+        var returned = await GetAsync(app, "returned");
+        var thrown = await GetAsync(app, "thrown");
 
         Assert.Equal(StatusCodes.Status404NotFound, returned.StatusCode);
-        Assert.Equal(StatusCodes.Status404NotFound, context.Response.StatusCode);
+        Assert.Equal(StatusCodes.Status404NotFound, thrown.StatusCode);
 
         // Same status, same meaning, different field names.
         Assert.Contains("\"Errors\"", returned.Body, StringComparison.Ordinal);
-        Assert.Contains("\"errors\"", thrown, StringComparison.Ordinal);
-        Assert.DoesNotContain("\"Errors\"", thrown, StringComparison.Ordinal);
+        Assert.Contains("\"errors\"", thrown.Body, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"Errors\"", thrown.Body, StringComparison.Ordinal);
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // ToApiResult: empty responses
-    // ---------------------------------------------------------------------------------------------
-
-    // The documented default: this overload never consults MediatorOptions, so a null response is 204
-    // even in an app that configured 200. Endpoints that want the configured status must use SendAsApiResult.
+    // EmptyResponseStatusCode is an enum, so any int can be cast into it. The helpers read the option when the endpoint
+    // is mapped, so a value they cannot write fails at startup rather than on the first empty response.
     [Fact]
-    public async Task ToApiResult_NullValue_WritesNoContent()
+    public async Task UndefinedEmptyResponseStatusCode_FailsWhenTheEndpointIsMapped()
     {
-        await AssertEmptyResponseAsync(((object?)null).ToApiResult(), StatusCodes.Status204NoContent);
-    }
-
-    [Theory]
-    [InlineData(EmptyResponseStatusCode.Ok, StatusCodes.Status200OK)]
-    [InlineData(EmptyResponseStatusCode.NoContent, StatusCodes.Status204NoContent)]
-    public async Task ToApiResult_NullValue_UsesTheGivenEmptyResponseStatusCode(EmptyResponseStatusCode emptyResponseStatusCode, int expectedStatusCode)
-    {
-        await AssertEmptyResponseAsync(((object?)null).ToApiResult(emptyResponseStatusCode), expectedStatusCode);
-    }
-
-    // EmptyResponseStatusCode is an enum, so any int can be cast into it. The mapper has to reject the
-    // ones it cannot write rather than silently returning some other status.
-    [Theory]
-    [InlineData(0)]
-    [InlineData(201)]
-    [InlineData(404)]
-    [InlineData(-1)]
-    public void ToApiResult_UndefinedEmptyResponseStatusCode_ThrowsAndNamesTheAllowedCodes(int rawStatusCode)
-    {
-        var exception = Assert.Throws<InvalidOperationException>(
-            () => ((object?)null).ToApiResult((EmptyResponseStatusCode)rawStatusCode));
+        var exception = await Assert.ThrowsAsync<OptionsValidationException>(() => StartAppAsync(
+            (EmptyResponseStatusCode)201,
+            static app => app.Get("void", static (ISender sender, CancellationToken ct) => sender.Send(new MappingVoidRequest(), ct))));
 
         Assert.Contains("200 OK", exception.Message);
         Assert.Contains("204 No Content", exception.Message);
     }
 
-    // The empty-response status is only consulted when there is no body, so a misconfigured option must
-    // not throw away a perfectly good 200 payload.
+    // Handlers and pipeline behaviors are allowed to return Results.* directly; wrapping such a result in another one
+    // would lose its status, headers and body. That holds even when the endpoint hands it over typed as object, and
+    // whatever empty status is configured.
     [Fact]
-    public async Task ToApiResult_NonNullValue_IgnoresAnUndefinedEmptyResponseStatusCode()
-    {
-        var executed = await ResultExecution.ExecuteAsync(
-            new MappingPayload("kept", 1).ToApiResult((EmptyResponseStatusCode)999));
-
-        Assert.Equal(StatusCodes.Status200OK, executed.StatusCode);
-        Assert.Equal("kept", executed.Json.GetProperty("name").GetString());
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // ToApiResult: IResult passthrough
-    // ---------------------------------------------------------------------------------------------
-
-    // Handlers and pipeline behaviors are allowed to return Results.* directly; wrapping such a result
-    // in another one would lose its status, headers and body.
-    [Fact]
-    public void ToApiResult_IResult_ReturnsTheVerySameInstance()
-    {
-        var accepted = Results.Accepted("/mapping/queued");
-        var noContent = Results.NoContent();
-        var custom = new MappingCustomResult();
-
-        Assert.Same(accepted, ((object?)accepted).ToApiResult());
-        Assert.Same(noContent, ((object?)noContent).ToApiResult());
-        Assert.Same(custom, ((object?)custom).ToApiResult());
-    }
-
-    // An explicitly requested empty-response status must not override a result the handler chose itself.
-    [Theory]
-    [InlineData(EmptyResponseStatusCode.Ok)]
-    [InlineData(EmptyResponseStatusCode.NoContent)]
-    public void ToApiResult_IResult_IsPassedThroughEvenWhenAnEmptyStatusIsGiven(EmptyResponseStatusCode emptyResponseStatusCode)
-    {
-        var chosen = Results.Accepted("/mapping/queued");
-
-        Assert.Same(chosen, ((object?)chosen).ToApiResult(emptyResponseStatusCode));
-    }
-
-    [Fact]
-    public async Task ToApiResult_IResult_KeepsTheStatusTheResultWritesItself()
+    public async Task ReturnedIResult_IsPassedThroughWithTheStatusItWritesItself()
     {
         var custom = new MappingCustomResult();
+        await using var app = await StartAppAsync(EmptyResponseStatusCode.Ok, app =>
+        {
+            app.Get("accepted", static () => (object)Results.Accepted("/mapping/queued"));
+            app.Get("custom", () => (object)custom);
+        });
 
-        var executed = await ResultExecution.ExecuteAsync(((object?)custom).ToApiResult());
-
+        Assert.Equal(StatusCodes.Status202Accepted, (await GetAsync(app, "accepted")).StatusCode);
+        Assert.Equal(StatusCodes.Status418ImATeapot, (await GetAsync(app, "custom")).StatusCode);
         Assert.True(custom.WasExecuted);
-        Assert.Equal(StatusCodes.Status418ImATeapot, executed.StatusCode);
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // ToApiResult: ErrorResponse
-    // ---------------------------------------------------------------------------------------------
-
-    // A handler that returns an ErrorResponse instead of throwing still has to produce the real HTTP
-    // status; returning 200 with an error body is the classic way clients end up ignoring failures.
-    // 599 is in here because the mapper casts the status through unchecked: an app using a code outside
-    // the HttpStatusCode enum must get that code, not a normalized 500.
+    // A handler that returns an ErrorResponse instead of throwing still has to produce the real HTTP status; returning
+    // 200 with an error body is the classic way clients end up ignoring failures. 599 is in here because the status is
+    // cast through unchecked: an app using a code outside the HttpStatusCode enum must get that code, not a normalized 500.
     [Theory]
     [InlineData(HttpStatusCode.BadRequest, StatusCodes.Status400BadRequest)]
     [InlineData(HttpStatusCode.NotFound, StatusCodes.Status404NotFound)]
@@ -171,623 +106,416 @@ public sealed class MappingApiResultTests
     [InlineData(HttpStatusCode.UnprocessableEntity, StatusCodes.Status422UnprocessableEntity)]
     [InlineData(HttpStatusCode.InternalServerError, StatusCodes.Status500InternalServerError)]
     [InlineData((HttpStatusCode)599, 599)]
-    public async Task ToApiResult_ErrorResponse_UsesItsHttpStatusCode(HttpStatusCode httpStatusCode, int expectedStatusCode)
+    public async Task ReturnedErrorResponse_UsesItsHttpStatusCode(HttpStatusCode httpStatusCode, int expectedStatusCode)
     {
-        var executed = await ResultExecution.ExecuteAsync(
-            new ErrorResponse(httpStatusCode, ["boom"]).ToApiResult());
+        await using var app = await StartAppAsync(null, app => app.Get("error", () => new ErrorResponse(httpStatusCode, ["boom"])));
 
-        Assert.Equal(expectedStatusCode, executed.StatusCode);
-        Assert.Equal("boom", executed.Json.GetProperty("errors")[0].GetString());
+        var answer = await GetAsync(app, "error");
+
+        Assert.Equal(expectedStatusCode, answer.StatusCode);
+        Assert.Equal("boom", answer.Json.GetProperty("errors")[0].GetString());
     }
 
-    // Clients parse one error shape. The middleware writes the public ErrorsResponse record with the web
-    // JSON defaults; mapping a RETURNED ErrorResponse has to produce that byte for byte — trace id
-    // included — or half the failures in an app come back in a shape the client cannot read, which half
-    // depending on whether the handler threw or returned.
+    // Clients parse one error shape. A RETURNED ErrorResponse has to come back exactly as the middleware writes a thrown
+    // one — same status, content type, members and messages — or half the failures in an app come back in a shape the
+    // client cannot read, which half depending on whether the handler threw or returned.
     [Fact]
-    public async Task ToApiResult_ErrorResponse_WritesTheSameBodyAsTheMiddleware()
+    public async Task ReturnedErrorResponse_HasTheSameBodyAsAThrownOne()
     {
-        using var activity = new Activity("mapping-error-shape").Start();
-
-        var executed = await ResultExecution.ExecuteAsync(
-            new ErrorResponse(HttpStatusCode.BadRequest, ["first", "second"]).ToApiResult());
-
-        var middlewareBody = JsonSerializer.Serialize(
-            new ErrorsResponse(["first", "second"], activity.TraceId.ToString()),
-            CreateJsonOptions(webDefaults: true));
-
-        Assert.Equal(StatusCodes.Status400BadRequest, executed.StatusCode);
-        Assert.StartsWith("application/json", executed.ContentType);
-        Assert.Equal(middlewareBody, executed.Body);
-    }
-
-    // The other half of the trace id contract: outside a request there is no ambient Activity, and the
-    // null-conditional in the mapper is the only thing keeping that from throwing. A background job that
-    // maps an ErrorResponse must still get the standard body, with traceId simply null.
-    [Fact]
-    public async Task ToApiResult_ErrorResponse_WithoutACurrentActivity_WritesANullTraceId()
-    {
-        var previous = Activity.Current;
-        Activity.Current = null;
-
-        try
+        await using var app = await StartAppAsync(null, static app =>
         {
-            var executed = await ResultExecution.ExecuteAsync(
-                new ErrorResponse(HttpStatusCode.BadRequest, ["boom"]).ToApiResult());
+            app.Get("returned", static () => new ErrorResponse(HttpStatusCode.BadRequest, ["first", "second"]));
+            app.Get("thrown", static () => { throw new HttpResponseException(new ErrorResponse(HttpStatusCode.BadRequest, ["first", "second"])); });
+        });
 
-            Assert.Equal(StatusCodes.Status400BadRequest, executed.StatusCode);
-            Assert.Equal(JsonValueKind.Null, executed.Json.GetProperty("traceId").ValueKind);
-            Assert.Equal("boom", executed.Json.GetProperty("errors")[0].GetString());
-        }
-        finally
-        {
-            Activity.Current = previous;
-        }
+        var returned = await GetAsync(app, "returned");
+        var thrown = await GetAsync(app, "thrown");
+
+        Assert.Equal(thrown.StatusCode, returned.StatusCode);
+        Assert.Equal(thrown.ContentType, returned.ContentType);
+        Assert.Equal(MemberNames(thrown.Json), MemberNames(returned.Json));
+        Assert.Equal(thrown.Json.GetProperty("errors").GetRawText(), returned.Json.GetProperty("errors").GetRawText());
+        Assert.False(string.IsNullOrEmpty(returned.Json.GetProperty("traceId").GetString()));
     }
 
-    // ErrorResponse is an unsealed record, so apps subclass it to carry an error code or a field name
-    // next to the messages. The mapper matches on the type pattern, so a subclass still maps to its own
-    // status and to the standard body — the extra members are not part of the wire contract.
+    // The other half of the trace id contract: an app with no logging or tracing has no request Activity. The body then
+    // carries the request's TraceIdentifier, as the exception middleware's does, rather than a null the caller can't
+    // quote back.
     [Fact]
-    public async Task ToApiResult_DerivedErrorResponse_IsMappedLikeTheBaseErrorResponse()
+    public async Task ReturnedErrorResponse_WithoutARequestActivity_StillCarriesATraceId()
     {
-        var executed = await ResultExecution.ExecuteAsync(
-            new MappingDerivedErrorResponse("CARD_DECLINED").ToApiResult());
+        await using var app = await StartAppAsync(
+            null,
+            static app => app.Get("error", static () => new ErrorResponse(HttpStatusCode.BadRequest, ["boom"])),
+            static services => services.AddLogging(static logging => logging.ClearProviders()));
 
-        var propertyNames = executed.Json.EnumerateObject().Select(static property => property.Name).ToArray();
+        var answer = await GetAsync(app, "error");
 
-        Assert.Equal(StatusCodes.Status402PaymentRequired, executed.StatusCode);
-        Assert.Equal("card declined", executed.Json.GetProperty("errors")[0].GetString());
-        Assert.Equal(2, propertyNames.Length);
-        Assert.DoesNotContain("code", propertyNames);
+        Assert.Equal(StatusCodes.Status400BadRequest, answer.StatusCode);
+        Assert.False(string.IsNullOrEmpty(answer.Json.GetProperty("traceId").GetString()));
     }
 
-    // An error with no messages is still an error: the status has to survive even when there is nothing
-    // to say, instead of collapsing into an empty 200.
+    // ErrorResponse is an unsealed record, so apps subclass it to carry an error code or a field name next to the
+    // messages. A subclass still maps to its own status and to the standard body — the extra members are not part of
+    // the wire contract.
     [Fact]
-    public async Task ToApiResult_ErrorResponseWithoutErrors_WritesAnEmptyErrorsArray()
+    public async Task ReturnedDerivedErrorResponse_IsWrittenLikeTheBaseErrorResponse()
     {
-        var executed = await ResultExecution.ExecuteAsync(
-            new ErrorResponse(HttpStatusCode.Forbidden, []).ToApiResult());
+        await using var app = await StartAppAsync(null, static app => app.Get("error", static () => new MappingDerivedErrorResponse("CARD_DECLINED")));
 
-        Assert.Equal(StatusCodes.Status403Forbidden, executed.StatusCode);
-        Assert.Equal(JsonValueKind.Array, executed.Json.GetProperty("errors").ValueKind);
-        Assert.Empty(executed.Json.GetProperty("errors").EnumerateArray());
+        var answer = await GetAsync(app, "error");
+
+        Assert.Equal(StatusCodes.Status402PaymentRequired, answer.StatusCode);
+        Assert.Equal("card declined", answer.Json.GetProperty("errors")[0].GetString());
+        Assert.Equal(new[] { "errors", "traceId" }, MemberNames(answer.Json));
     }
 
-    // ErrorsResponse is the BODY type, ErrorResponse is the ERROR type. Returning the body type from a
-    // handler produces an error-looking payload with a 200 status — worth pinning so the trap is visible.
+    // An error with no messages is still an error: the status has to survive even when there is nothing to say, instead
+    // of collapsing into an empty 200.
     [Fact]
-    public async Task ToApiResult_ErrorsResponse_IsMappedAsAPlainValueWith200()
+    public async Task ReturnedErrorResponseWithoutErrors_WritesAnEmptyErrorsArray()
     {
-        var executed = await ResultExecution.ExecuteAsync(
-            new ErrorsResponse(["boom"], "trace-1").ToApiResult());
+        await using var app = await StartAppAsync(null, static app => app.Get("error", static () => new ErrorResponse(HttpStatusCode.Forbidden, [])));
 
-        Assert.Equal(StatusCodes.Status200OK, executed.StatusCode);
-        Assert.Equal("boom", executed.Json.GetProperty("errors")[0].GetString());
+        var answer = await GetAsync(app, "error");
+
+        Assert.Equal(StatusCodes.Status403Forbidden, answer.StatusCode);
+        Assert.Empty(answer.Json.GetProperty("errors").EnumerateArray());
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // ToApiResult: values
-    // ---------------------------------------------------------------------------------------------
-
-    // The value arrives typed as object (that is what ISender.Send returns), so serialization has to use
-    // the runtime type. Serializing the declared type would write "{}" for every response in the app.
+    // ErrorsResponse is the BODY type, ErrorResponse is the ERROR type. Returning the body type produces an error-looking
+    // payload with a 200 status — worth pinning so the trap is visible.
     [Fact]
-    public async Task ToApiResult_ReferenceType_WritesTheRuntimeTypesPropertiesWith200()
+    public async Task ReturnedErrorsResponse_IsWrittenAsAPlainValueWith200()
     {
-        object? value = new MappingPayload("echoed", 7);
+        await using var app = await StartAppAsync(null, static app => app.Get("body", static () => new ErrorsResponse(["boom"], "trace-1")));
 
-        var executed = await ResultExecution.ExecuteAsync(value.ToApiResult());
+        var answer = await GetAsync(app, "body");
 
-        Assert.Equal(StatusCodes.Status200OK, executed.StatusCode);
-        Assert.StartsWith("application/json", executed.ContentType);
-        Assert.Equal("echoed", executed.Json.GetProperty("name").GetString());
-        Assert.Equal(7, executed.Json.GetProperty("count").GetInt32());
+        Assert.Equal(StatusCodes.Status200OK, answer.StatusCode);
+        Assert.Equal("boom", answer.Json.GetProperty("errors")[0].GetString());
     }
 
-    // Documented: "always return JSON so Swagger/clients consistently get the documented
-    // content-type/schema". A string must come back quoted as JSON, not as text/plain.
+    // A value typed as object (what ISender.Send(object) returns) has to be serialized as its runtime type. Serializing
+    // the declared type would write "{}" for every such response.
+    [Fact]
+    public async Task ReturnedValueTypedAsObject_WritesTheRuntimeTypesProperties()
+    {
+        await using var app = await StartAppAsync(null, static app => app.Get("value", static () => (object)new MappingPayload("echoed", 7)));
+
+        var answer = await GetAsync(app, "value");
+
+        Assert.Equal(StatusCodes.Status200OK, answer.StatusCode);
+        Assert.Equal("application/json", answer.ContentType);
+        Assert.Equal("echoed", answer.Json.GetProperty("name").GetString());
+        Assert.Equal(7, answer.Json.GetProperty("count").GetInt32());
+    }
+
+    // "Always return JSON so Swagger/clients consistently get the documented content-type/schema". A string comes back
+    // quoted as JSON, not as text/plain.
     [Theory]
     [InlineData(42, "42")]
     [InlineData(true, "true")]
     [InlineData(1.5, "1.5")]
     [InlineData("hello", "\"hello\"")]
-    public async Task ToApiResult_ScalarValue_IsAlwaysWrittenAsJson(object value, string expectedBody)
+    public async Task ReturnedScalar_IsAlwaysWrittenAsJson(object value, string expectedBody)
     {
-        var executed = await ResultExecution.ExecuteAsync(value.ToApiResult());
+        await using var app = await StartAppAsync(null, app => app.Get("value", () => value));
 
-        Assert.Equal(StatusCodes.Status200OK, executed.StatusCode);
-        Assert.StartsWith("application/json", executed.ContentType);
-        Assert.Equal(expectedBody, executed.Body);
+        var answer = await GetAsync(app, "value");
+
+        Assert.Equal(StatusCodes.Status200OK, answer.StatusCode);
+        Assert.Equal("application/json", answer.ContentType);
+        Assert.Equal(expectedBody, answer.Body);
     }
 
+    // "No rows" is a successful 200 with an empty array, not an empty response: a client that switches on the status
+    // must not treat an empty page as "nothing was returned".
     [Fact]
-    public async Task ToApiResult_Collection_WritesAJsonArray()
+    public async Task ReturnedCollections_AreWrittenAsJsonArrays_EvenWhenEmpty()
     {
-        var executed = await ResultExecution.ExecuteAsync(new[] { 1, 2, 3 }.ToApiResult());
+        await using var app = await StartAppAsync(null, static app =>
+        {
+            app.Get("some", static () => new[] { 1, 2, 3 });
+            app.Get("none", static () => Array.Empty<int>());
+        });
 
-        Assert.Equal(StatusCodes.Status200OK, executed.StatusCode);
-        Assert.Equal("[1,2,3]", executed.Body);
+        var some = await GetAsync(app, "some");
+        var none = await GetAsync(app, "none");
+
+        Assert.Equal((StatusCodes.Status200OK, "[1,2,3]"), (some.StatusCode, some.Body));
+        Assert.Equal((StatusCodes.Status200OK, "[]"), (none.StatusCode, none.Body));
     }
 
-    // "No rows" is a successful 200 with an empty array, not an empty response: a client that switches on
-    // the status must not treat an empty page as "nothing was returned".
+    // "Found nothing" is often written as new SingleResponse<T>(null). The WRAPPER is not null, so this is a 200 with
+    // {"result":null} and never the empty response — an endpoint that wants 204 has to return null itself. Pinned
+    // because the two spellings look identical at the call site.
     [Fact]
-    public async Task ToApiResult_EmptyCollection_WritesAnEmptyArrayNotAnEmptyResponse()
+    public async Task ReturnedSingleResponse_WritesTheWrappedResult_EvenANullOne()
     {
-        var executed = await ResultExecution.ExecuteAsync(Array.Empty<int>().ToApiResult());
+        await using var app = await StartAppAsync(null, static app =>
+        {
+            app.Get("wrapped", static () => new SingleResponse<string>("wrapped"));
+            app.Get("wrapped-null", static () => new SingleResponse<string>(null!));
+        });
 
-        Assert.Equal(StatusCodes.Status200OK, executed.StatusCode);
-        Assert.Equal("[]", executed.Body);
+        Assert.Equal("wrapped", (await GetAsync(app, "wrapped")).Json.GetProperty("result").GetString());
+
+        var wrappedNull = await GetAsync(app, "wrapped-null");
+        Assert.Equal(StatusCodes.Status200OK, wrappedNull.StatusCode);
+        Assert.Equal("{\"result\":null}", wrappedNull.Body);
     }
 
+    // The paging wrapper is what every list endpoint returns; its computed page count has to reach the client, not just
+    // the raw constructor arguments.
     [Fact]
-    public async Task ToApiResult_SingleResponse_WritesTheWrappedResult()
+    public async Task ReturnedMultiResponse_WritesTheDataAndThePagingNumbers()
     {
-        var executed = await ResultExecution.ExecuteAsync(new SingleResponse<string>("wrapped").ToApiResult());
+        await using var app = await StartAppAsync(null, static app =>
+            app.Get("page", static () => new MultiResponse<string>(["a", "b"], totalCount: 5, pageSize: 2)));
 
-        Assert.Equal(StatusCodes.Status200OK, executed.StatusCode);
-        Assert.Equal("wrapped", executed.Json.GetProperty("result").GetString());
-    }
+        var answer = await GetAsync(app, "page");
 
-    // "Found nothing" is often written as new SingleResponse<T>(null). The WRAPPER is not null, so this
-    // is a 200 with {"result":null} and never the empty response — an endpoint that wants 204 has to
-    // return null itself. Pinned because the two spellings look identical at the call site.
-    [Fact]
-    public async Task ToApiResult_SingleResponseWrappingNull_Writes200WithANullResult()
-    {
-        var executed = await ResultExecution.ExecuteAsync(new SingleResponse<string>(null!).ToApiResult());
-
-        Assert.Equal(StatusCodes.Status200OK, executed.StatusCode);
-        Assert.Equal("{\"result\":null}", executed.Body);
-    }
-
-    // The paging wrapper is what every list endpoint returns; its computed page count has to reach the
-    // client, not just the raw constructor arguments.
-    [Fact]
-    public async Task ToApiResult_MultiResponse_WritesTheDataAndThePagingNumbers()
-    {
-        var executed = await ResultExecution.ExecuteAsync(
-            new MultiResponse<string>(["a", "b"], totalCount: 5, pageSize: 2).ToApiResult());
-
-        Assert.Equal(StatusCodes.Status200OK, executed.StatusCode);
-        Assert.Equal(2, executed.Json.GetProperty("data").GetArrayLength());
-        Assert.Equal(5, executed.Json.GetProperty("totalCount").GetInt32());
-        Assert.Equal(2, executed.Json.GetProperty("pageSize").GetInt32());
-        Assert.Equal(3, executed.Json.GetProperty("pagesCount").GetInt32());
+        Assert.Equal(StatusCodes.Status200OK, answer.StatusCode);
+        Assert.Equal(2, answer.Json.GetProperty("data").GetArrayLength());
+        Assert.Equal(5, answer.Json.GetProperty("totalCount").GetInt32());
+        Assert.Equal(2, answer.Json.GetProperty("pageSize").GetInt32());
+        Assert.Equal(3, answer.Json.GetProperty("pagesCount").GetInt32());
     }
 
     // ---------------------------------------------------------------------------------------------
-    // SendAsApiResult: empty responses through each overload
+    // Endpoint helpers: an endpoint that returns sender.Send(...)
     // ---------------------------------------------------------------------------------------------
 
+    // A void request: the delegate returns a plain Task, which ASP.NET Core alone would answer with 200.
     [Theory]
     [InlineData(EmptyResponseStatusCode.Ok, StatusCodes.Status200OK)]
     [InlineData(EmptyResponseStatusCode.NoContent, StatusCodes.Status204NoContent)]
-    public async Task SendAsApiResult_ObjectOverloadWithVoidRequest_UsesTheConfiguredEmptyResponseStatus(
-        EmptyResponseStatusCode configured, int expectedStatusCode)
+    public async Task Endpoint_VoidRequest_AnswersWithTheConfiguredEmptyStatus(EmptyResponseStatusCode configured, int expectedStatusCode)
     {
-        using var provider = CreateProvider(configured);
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await using var app = await StartAppAsync(configured, static app =>
+            app.Get("void", static (ISender sender, CancellationToken ct) => sender.Send(new MappingVoidRequest(), ct)));
 
-        // Cast to object so this binds to SendAsApiResult(ISender, object, ...) and not to the generic
-        // void overload, which is a different code path.
-        var result = await sender.SendAsApiResult((object)new MappingVoidRequest());
-
-        await AssertEmptyResponseAsync(result, expectedStatusCode);
+        AssertEmpty(await GetAsync(app, "void"), expectedStatusCode);
     }
 
-    // A handler that legitimately has nothing to return (a lookup that found nothing to send back) must
-    // map the same way a void request does, so the endpoint matches what OpenAPI advertises.
+    // A handler that legitimately has nothing to return (a lookup that found nothing to send back) maps the same way a
+    // void request does, through every Send overload an endpoint can bind to.
     [Theory]
     [InlineData(EmptyResponseStatusCode.Ok, StatusCodes.Status200OK)]
     [InlineData(EmptyResponseStatusCode.NoContent, StatusCodes.Status204NoContent)]
-    public async Task SendAsApiResult_ObjectOverloadWithNullHandlerResult_UsesTheConfiguredEmptyResponseStatus(
-        EmptyResponseStatusCode configured, int expectedStatusCode)
+    public async Task Endpoint_NullHandlerResult_AnswersWithTheConfiguredEmptyStatus(EmptyResponseStatusCode configured, int expectedStatusCode)
     {
-        using var provider = CreateProvider(configured);
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await using var app = await StartAppAsync(configured, static app =>
+        {
+            app.Get("inferred", static (ISender sender, CancellationToken ct) => sender.Send(new MappingNullResponseRequest(), ct));
+            app.Get("typed", static (ISender sender, CancellationToken ct) => sender.Send<MappingNullResponseRequest, string?>(new MappingNullResponseRequest(), ct));
+            app.Get("object", static (ISender sender, CancellationToken ct) => sender.Send((object)new MappingNullResponseRequest(), ct));
+        });
 
-        var result = await sender.SendAsApiResult(new MappingNullResponseRequest());
-
-        await AssertEmptyResponseAsync(result, expectedStatusCode);
-    }
-
-    [Theory]
-    [InlineData(EmptyResponseStatusCode.Ok, StatusCodes.Status200OK)]
-    [InlineData(EmptyResponseStatusCode.NoContent, StatusCodes.Status204NoContent)]
-    public async Task SendAsApiResult_TypedOverload_UsesTheConfiguredEmptyResponseStatus(
-        EmptyResponseStatusCode configured, int expectedStatusCode)
-    {
-        using var provider = CreateProvider(configured);
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-
-        var result = await sender.SendAsApiResult<MappingNullResponseRequest, string?>(new MappingNullResponseRequest());
-
-        await AssertEmptyResponseAsync(result, expectedStatusCode);
-    }
-
-    [Theory]
-    [InlineData(EmptyResponseStatusCode.Ok, StatusCodes.Status200OK)]
-    [InlineData(EmptyResponseStatusCode.NoContent, StatusCodes.Status204NoContent)]
-    public async Task SendAsApiResult_VoidOverload_UsesTheConfiguredEmptyResponseStatus(
-        EmptyResponseStatusCode configured, int expectedStatusCode)
-    {
-        using var provider = CreateProvider(configured);
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-
-        var result = await sender.SendAsApiResult<MappingVoidRequest>(new MappingVoidRequest());
-
-        await AssertEmptyResponseAsync(result, expectedStatusCode);
+        foreach (var path in new[] { "inferred", "typed", "object" })
+            AssertEmpty(await GetAsync(app, path), expectedStatusCode);
     }
 
     // The default has to stay 204: apps that never touch MediatorOptions rely on it.
     [Fact]
-    public async Task SendAsApiResult_WithoutConfiguredOptions_DefaultsToNoContent()
+    public async Task Endpoint_WithoutConfiguredOptions_AnswersAnEmptyResultWithNoContent()
     {
-        using var provider = CreateProvider();
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await using var app = await StartAppAsync(null, static app =>
+            app.Get("void", static (ISender sender, CancellationToken ct) => sender.Send(new MappingVoidRequest(), ct)));
 
-        await AssertEmptyResponseAsync(
-            await sender.SendAsApiResult((object)new MappingVoidRequest()),
-            StatusCodes.Status204NoContent);
-        await AssertEmptyResponseAsync(
-            await sender.SendAsApiResult<MappingVoidRequest>(new MappingVoidRequest()),
-            StatusCodes.Status204NoContent);
+        AssertEmpty(await GetAsync(app, "void"), StatusCodes.Status204NoContent);
     }
 
-    // A handler declared IRequest<int?> with nothing to return goes through the generic overload, where
-    // the response is boxed before the mapper sees it. An empty Nullable<int> has to box to null and map
-    // to the empty response, instead of reaching the serializer as a 200 with the literal "null".
+    // An empty Nullable<int> boxes to null on its way through the filter and maps to the empty response, instead of
+    // reaching the serializer as a 200 with the literal "null"...
     [Fact]
-    public async Task SendAsApiResult_TypedOverloadWithAnEmptyNullableResponse_UsesTheConfiguredEmptyResponseStatus()
+    public async Task Endpoint_EmptyNullableResponse_AnswersWithTheConfiguredEmptyStatus()
     {
-        using var provider = CreateProvider(EmptyResponseStatusCode.Ok);
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await using var app = await StartAppAsync(EmptyResponseStatusCode.Ok, static app =>
+            app.Get("empty", static (ISender sender, CancellationToken ct) => sender.Send(new MappingNullableIntRequest(), ct)));
 
-        await AssertEmptyResponseAsync(
-            await sender.SendAsApiResult<MappingNullableIntRequest, int?>(new MappingNullableIntRequest()),
-            StatusCodes.Status200OK);
+        AssertEmpty(await GetAsync(app, "empty"), StatusCodes.Status200OK);
     }
 
-    // The mirror image, and the one a "did the handler return anything?" check gets wrong: 0 is a value.
-    // Treating default(T) as empty would turn every legitimate zero into a 204 with no body.
+    // ...and the mirror image, the one a "did the handler return anything?" check gets wrong: 0 is a value.
     [Fact]
-    public async Task SendAsApiResult_TypedOverloadWithAZeroResponse_Writes200WithTheValue()
+    public async Task Endpoint_ZeroResponse_Answers200WithTheValue()
     {
-        using var provider = CreateProvider();
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await using var app = await StartAppAsync(null, static app =>
+            app.Get("zero", static (ISender sender, CancellationToken ct) => sender.Send(new MappingNullableIntRequest { Value = 0 }, ct)));
 
-        var executed = await ResultExecution.ExecuteAsync(
-            await sender.SendAsApiResult<MappingNullableIntRequest, int?>(new MappingNullableIntRequest { Value = 0 }));
+        var answer = await GetAsync(app, "zero");
 
-        Assert.Equal(StatusCodes.Status200OK, executed.StatusCode);
-        Assert.Equal("0", executed.Body);
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // SendAsApiResult: non-empty responses
-    // ---------------------------------------------------------------------------------------------
-
-    [Fact]
-    public async Task SendAsApiResult_ObjectOverload_WritesTheHandlerResponseAsJson()
-    {
-        using var provider = CreateProvider();
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-
-        var executed = await ResultExecution.ExecuteAsync(
-            await sender.SendAsApiResult(new MappingPayloadRequest { Value = "from-object-overload" }));
-
-        Assert.Equal(StatusCodes.Status200OK, executed.StatusCode);
-        Assert.StartsWith("application/json", executed.ContentType);
-        Assert.Equal("from-object-overload", executed.Json.GetProperty("name").GetString());
-    }
-
-    // The strongly-typed overload skips the reflection dispatch, so it is a genuinely separate path that
-    // has to end up at the same mapping.
-    [Fact]
-    public async Task SendAsApiResult_TypedOverload_WritesTheHandlerResponseAsJson()
-    {
-        using var provider = CreateProvider();
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-
-        var executed = await ResultExecution.ExecuteAsync(
-            await sender.SendAsApiResult<MappingPayloadRequest, MappingPayload>(
-                new MappingPayloadRequest { Value = "from-typed-overload" }));
-
-        Assert.Equal(StatusCodes.Status200OK, executed.StatusCode);
-        Assert.Equal("from-typed-overload", executed.Json.GetProperty("name").GetString());
-    }
-
-    // A handler that needs a status the mapper does not produce (202, a redirect, a file) returns an
-    // IResult; SendAsApiResult must hand it to the framework untouched.
-    [Fact]
-    public async Task SendAsApiResult_HandlerReturningAnIResult_PassesItThrough()
-    {
-        using var provider = CreateProvider();
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-
-        var executed = await ResultExecution.ExecuteAsync(
-            await sender.SendAsApiResult(new MappingResultRequest()));
-
-        Assert.Equal(StatusCodes.Status202Accepted, executed.StatusCode);
-        Assert.Equal("handler-chosen-result", executed.Json.GetProperty("name").GetString());
+        Assert.Equal(StatusCodes.Status200OK, answer.StatusCode);
+        Assert.Equal("0", answer.Body);
     }
 
     [Fact]
-    public async Task SendAsApiResult_HandlerReturningAnErrorResponse_MapsToItsStatusAndErrorsBody()
+    public async Task Endpoint_Payload_AnswersWithJsonThroughEveryOverload()
     {
-        using var provider = CreateProvider();
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await using var app = await StartAppAsync(null, static app =>
+        {
+            app.Get("inferred", static (ISender sender, CancellationToken ct) => sender.Send(new MappingPayloadRequest { Value = "inferred" }, ct));
+            app.Get("typed", static (ISender sender, CancellationToken ct) => sender.Send<MappingPayloadRequest, MappingPayload>(new MappingPayloadRequest { Value = "typed" }, ct));
+            app.Get("object", static (ISender sender, CancellationToken ct) => sender.Send((object)new MappingPayloadRequest { Value = "object" }, ct));
+        });
 
-        var executed = await ResultExecution.ExecuteAsync(
-            await sender.SendAsApiResult<MappingErrorResponseRequest, ErrorResponse>(new MappingErrorResponseRequest()));
+        foreach (var path in new[] { "inferred", "typed", "object" })
+        {
+            var answer = await GetAsync(app, path);
 
-        Assert.Equal(StatusCodes.Status409Conflict, executed.StatusCode);
-        Assert.Equal("already exists", executed.Json.GetProperty("errors")[0].GetString());
+            Assert.Equal(StatusCodes.Status200OK, answer.StatusCode);
+            Assert.Equal("application/json", answer.ContentType);
+            Assert.Equal(path, answer.Json.GetProperty("name").GetString());
+        }
     }
 
-    // A behavior may answer without calling the handler (authorization, a cache hit, any short circuit).
-    // What reaches the client is what the PIPELINE produced, so an ErrorResponse from a behavior has to
-    // become a real error status — not a 200 carrying an error-shaped body, and not the handler's value.
+    // ASP.NET Core writes a returned string as text/plain; the documented responses are JSON.
     [Fact]
-    public async Task SendAsApiResult_BehaviorShortCircuitingWithAnErrorResponse_MapsTheBehaviorsValue()
+    public async Task Endpoint_StringResponse_AnswersWithAJsonString()
     {
-        using var provider = CreateProvider();
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await using var app = await StartAppAsync(null, static app =>
+            app.Get("text", static (ISender sender, CancellationToken ct) => sender.Send(new MappingTextRequest(), ct)));
 
-        var executed = await ResultExecution.ExecuteAsync(
-            await sender.SendAsApiResult(new MappingShortCircuitRequest()));
+        var answer = await GetAsync(app, "text");
 
-        var errors = executed.Json.GetProperty("errors");
-
-        Assert.Equal(StatusCodes.Status403Forbidden, executed.StatusCode);
-        Assert.Equal(1, errors.GetArrayLength());
-        Assert.Equal("not allowed", errors[0].GetString());
+        Assert.Equal(StatusCodes.Status200OK, answer.StatusCode);
+        Assert.Equal("application/json", answer.ContentType);
+        Assert.Equal("\"hello\"", answer.Body);
     }
 
-    // Every list endpoint sends an IPagedRequest<T>, which reaches IRequest<MultiResponse<T>> only
-    // through an inherited interface. Dispatch and the paging body have to survive that indirection
-    // together: a pager whose pagesCount is missing or wrong makes the last rows unreachable.
+    // A handler that needs a status the mapping does not produce (202, a redirect, a file) returns an IResult, which
+    // reaches the framework untouched.
     [Fact]
-    public async Task SendAsApiResult_PagedRequest_WritesTheMultiResponsePagingBody()
+    public async Task Endpoint_HandlerReturningAnIResult_PassesItThrough()
     {
-        using var provider = CreateProvider();
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await using var app = await StartAppAsync(null, static app =>
+            app.Get("result", static (ISender sender, CancellationToken ct) => sender.Send(new MappingResultRequest(), ct)));
 
-        var executed = await ResultExecution.ExecuteAsync(
-            await sender.SendAsApiResult(new MappingPagedRequest { PageNum = 2, PageSize = 2 }));
+        var answer = await GetAsync(app, "result");
 
-        Assert.Equal(StatusCodes.Status200OK, executed.StatusCode);
-        Assert.Equal(["c", "d"], executed.Json.GetProperty("data").EnumerateArray().Select(static item => item.GetString()));
-        Assert.Equal(5, executed.Json.GetProperty("totalCount").GetInt32());
-        Assert.Equal(2, executed.Json.GetProperty("pageSize").GetInt32());
-        Assert.Equal(3, executed.Json.GetProperty("pagesCount").GetInt32());
+        Assert.Equal(StatusCodes.Status202Accepted, answer.StatusCode);
+        Assert.Equal("handler-chosen-result", answer.Json.GetProperty("name").GetString());
     }
 
-    // An endpoint delegate may declare its parameter as the interface (IRequest<TResponse>), and the
-    // endpoint helpers advertise "200 with TResponse" for exactly that shape. SendAsApiResult binds with
-    // TRequest = the interface, for which no handler is registered, so it has to dispatch by the runtime
-    // type — otherwise the advertised response is one the endpoint can never produce.
+    // Plain Send used to write a returned ErrorResponse as a 200 with the record as its body.
     [Fact]
-    public async Task SendAsApiResult_RequestTypedAsTheRequestInterface_StillMapsTheHandlerResponse()
+    public async Task Endpoint_HandlerReturningAnErrorResponse_AnswersWithItsStatusAndTheErrorsBody()
     {
-        using var provider = CreateProvider();
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-        IRequest<MappingPayload> request = new MappingPayloadRequest { Value = "via-interface" };
+        await using var app = await StartAppAsync(null, static app =>
+            app.Get("error", static (ISender sender, CancellationToken ct) => sender.Send(new MappingErrorResponseRequest(), ct)));
 
-        var executed = await ResultExecution.ExecuteAsync(
-            await sender.SendAsApiResult<IRequest<MappingPayload>, MappingPayload>(request));
+        var answer = await GetAsync(app, "error");
 
-        Assert.Equal(StatusCodes.Status200OK, executed.StatusCode);
-        Assert.Equal("via-interface", executed.Json.GetProperty("name").GetString());
+        Assert.Equal(StatusCodes.Status409Conflict, answer.StatusCode);
+        Assert.Equal(new[] { "errors", "traceId" }, answer.Json.EnumerateObject().Select(static p => p.Name).Order(StringComparer.Ordinal));
+        Assert.Equal("already exists", answer.Json.GetProperty("errors")[0].GetString());
+        Assert.False(string.IsNullOrEmpty(answer.Json.GetProperty("traceId").GetString()));
     }
 
-    // Same for commands dispatched polymorphically (a List<IRequest>, a factory return value): the void
-    // overload binds with TRequest = IRequest, and the configured empty status still has to be honored.
+    // A behavior may answer without calling the handler (authorization, a cache hit, any short circuit). What reaches
+    // the client is what the PIPELINE produced, so an ErrorResponse from a behavior has to become a real error status —
+    // not a 200 carrying an error-shaped body, and not the handler's value.
     [Fact]
-    public async Task SendAsApiResult_VoidRequestTypedAsTheRequestInterface_UsesTheConfiguredEmptyResponseStatus()
+    public async Task Endpoint_BehaviorShortCircuitingWithAnErrorResponse_AnswersWithTheBehaviorsError()
     {
-        using var provider = CreateProvider(EmptyResponseStatusCode.Ok);
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-        IRequest command = new MappingVoidRequest();
+        await using var app = await StartAppAsync(null, static app =>
+            app.Get("short-circuit", static (ISender sender, CancellationToken ct) => sender.Send(new MappingShortCircuitRequest(), ct)));
 
-        await AssertEmptyResponseAsync(await sender.SendAsApiResult<IRequest>(command), StatusCodes.Status200OK);
+        var answer = await GetAsync(app, "short-circuit");
+
+        Assert.Equal(StatusCodes.Status403Forbidden, answer.StatusCode);
+        Assert.Equal("not allowed", Assert.Single(answer.Json.GetProperty("errors").EnumerateArray()).GetString());
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // SendAsApiResult: exceptions and cancellation
-    // ---------------------------------------------------------------------------------------------
-
-    // Documented contract: SendAsApiResult does not catch. Swallowing here would turn every unhandled
-    // failure into a 200/204 and the exception-handling middleware would never see it.
+    // Every list endpoint sends an IPagedRequest<T>, which reaches IRequest<MultiResponse<T>> only through an inherited
+    // interface. Dispatch and the paging body have to survive that indirection together.
     [Fact]
-    public async Task SendAsApiResult_ObjectOverload_DoesNotCatchHandlerExceptions()
+    public async Task Endpoint_PagedRequest_AnswersWithTheMultiResponsePagingBody()
     {
-        using var provider = CreateProvider();
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await using var app = await StartAppAsync(null, static app =>
+            app.Get("paged", static (ISender sender, CancellationToken ct) => sender.Send(new MappingPagedRequest { PageNum = 2, PageSize = 2 }, ct)));
 
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => sender.SendAsApiResult(new MappingThrowingRequest()));
+        var answer = await GetAsync(app, "paged");
 
-        Assert.Equal(MappingThrowingRequestHandler.Message, exception.Message);
+        Assert.Equal(StatusCodes.Status200OK, answer.StatusCode);
+        Assert.Equal(["c", "d"], answer.Json.GetProperty("data").EnumerateArray().Select(static item => item.GetString()));
+        Assert.Equal(5, answer.Json.GetProperty("totalCount").GetInt32());
+        Assert.Equal(2, answer.Json.GetProperty("pageSize").GetInt32());
+        Assert.Equal(3, answer.Json.GetProperty("pagesCount").GetInt32());
     }
 
+    // A request held as its interface (a List<IRequest>, a factory return value) is dispatched by its runtime type, and
+    // its result maps like any other.
     [Fact]
-    public async Task SendAsApiResult_TypedOverload_DoesNotCatchHandlerExceptions()
+    public async Task Endpoint_RequestsTypedAsTheRequestInterface_AreMappedLikeAnyOther()
     {
-        using var provider = CreateProvider();
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await using var app = await StartAppAsync(EmptyResponseStatusCode.Ok, static app =>
+        {
+            app.Get("query", static (ISender sender, CancellationToken ct) =>
+            {
+                IRequest<MappingPayload> request = new MappingPayloadRequest { Value = "via-interface" };
+                return sender.Send(request, ct);
+            });
+            app.Get("command", static (ISender sender, CancellationToken ct) =>
+            {
+                IRequest command = new MappingVoidRequest();
+                return sender.Send(command, ct);
+            });
+        });
 
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => sender.SendAsApiResult<MappingThrowingRequest, MappingPayload>(new MappingThrowingRequest()));
-
-        Assert.Equal(MappingThrowingRequestHandler.Message, exception.Message);
+        Assert.Equal("via-interface", (await GetAsync(app, "query")).Json.GetProperty("name").GetString());
+        AssertEmpty(await GetAsync(app, "command"), StatusCodes.Status200OK);
     }
 
-    // The void overload awaits Send and then builds the empty result itself, so it is the overload most
-    // likely to accidentally turn a failure into a 204.
+    // The empty status comes from the options, not from the sender, so an app that decorates ISender keeps it.
     [Fact]
-    public async Task SendAsApiResult_VoidOverload_DoesNotCatchHandlerExceptions()
+    public async Task Endpoint_WithADecoratedSender_StillAnswersWithTheConfiguredEmptyStatus()
     {
-        using var provider = CreateProvider();
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await using var app = await StartAppAsync(
+            EmptyResponseStatusCode.Ok,
+            static app => app.Get("void", static (ISender sender, CancellationToken ct) => sender.Send(new MappingVoidRequest(), ct)),
+            static services => services.AddScoped<ISender>(static provider =>
+                new MappingPlainSenderWrapper(provider.GetRequiredService<global::Phoenix.Mediator.Mediator.Mediator>())));
 
-        var exception = await Assert.ThrowsAsync<HttpResponseException>(
-            () => sender.SendAsApiResult<MappingThrowingVoidRequest>(new MappingThrowingVoidRequest()));
-
-        Assert.Equal(HttpStatusCode.NotFound, exception.HttpStatusCode);
+        AssertEmpty(await GetAsync(app, "void"), StatusCodes.Status200OK);
     }
 
-    // The endpoint's CancellationToken has to reach the handler, otherwise a client disconnect keeps the
-    // database work running to completion.
+    // The filter must not catch: a swallowed exception would turn every failure into a 200/204 and the exception-
+    // handling middleware would never see it. A void request is the one most likely to come back as a 204.
     [Fact]
-    public async Task SendAsApiResult_ForwardsTheCancellationTokenToTheHandler()
+    public async Task Endpoint_HandlerExceptions_StillReachTheExceptionMiddleware()
     {
-        using var provider = CreateProvider();
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-        using var cancelled = new CancellationTokenSource();
-        cancelled.Cancel();
+        await using var app = await StartAppAsync(null, static app =>
+        {
+            app.Get("throwing-void", static (ISender sender, CancellationToken ct) => sender.Send(new MappingThrowingVoidRequest(), ct));
+            app.Get("throwing", static (ISender sender, CancellationToken ct) => sender.Send(new MappingThrowingRequest(), ct));
+        });
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => sender.SendAsApiResult(new MappingCancellationRequest(), cancelled.Token));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => sender.SendAsApiResult<MappingCancellationRequest, string>(new MappingCancellationRequest(), cancelled.Token));
+        Assert.Equal(StatusCodes.Status404NotFound, (await GetAsync(app, "throwing-void")).StatusCode);
+        Assert.Equal(StatusCodes.Status500InternalServerError, (await GetAsync(app, "throwing")).StatusCode);
     }
 
+    // A delegate that returns an IResult has chosen its response; the helpers leave it alone. Results.Empty is the
+    // proof: mapped, it would become the empty status (204); left alone, it is a 200 with no body.
     [Fact]
-    public async Task SendAsApiResult_VoidOverload_ForwardsTheCancellationTokenToTheHandler()
+    public async Task Endpoint_ReturningAnIResultItself_IsLeftAlone()
     {
-        using var provider = CreateProvider();
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-        using var cancelled = new CancellationTokenSource();
-        cancelled.Cancel();
+        await using var app = await StartAppAsync(null, static app => app.Get("own", static () => Results.Empty));
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => sender.SendAsApiResult<MappingCancellationVoidRequest>(new MappingCancellationVoidRequest(), cancelled.Token));
+        AssertEmpty(await GetAsync(app, "own"), StatusCodes.Status200OK);
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // SendAsApiResult: the IMediatorOptionsAccessor contract
-    // ---------------------------------------------------------------------------------------------
-
-    // This is exactly what the IMediatorOptionsAccessor doc comment promises: decorate ISender without
-    // implementing it and empty responses silently fall back to 204, even though the app configured 200
-    // and the endpoint helpers advertise 200 in OpenAPI.
+    // Only the endpoint helpers map results. An endpoint mapped with ASP.NET Core's own MapGet answers as ASP.NET Core
+    // does, which is the documented boundary.
     [Fact]
-    public async Task SendAsApiResult_SenderWithoutOptionsAccessor_FallsBackToNoContent()
+    public async Task Endpoint_MappedWithoutTheHelpers_IsNotMapped()
     {
-        using var provider = CreateProvider(EmptyResponseStatusCode.Ok);
-        using var scope = provider.CreateScope();
-        var wrapper = new MappingPlainSenderWrapper(scope.ServiceProvider.GetRequiredService<ISender>());
+        await using var app = await StartAppAsync(null, static app =>
+            app.MapGet("raw", static (ISender sender, CancellationToken ct) => sender.Send(new MappingVoidRequest(), ct)));
 
-        await AssertEmptyResponseAsync(
-            await wrapper.SendAsApiResult((object)new MappingVoidRequest()),
-            StatusCodes.Status204NoContent);
-        await AssertEmptyResponseAsync(
-            await wrapper.SendAsApiResult<MappingNullResponseRequest, string?>(new MappingNullResponseRequest()),
-            StatusCodes.Status204NoContent);
-        await AssertEmptyResponseAsync(
-            await wrapper.SendAsApiResult<MappingVoidRequest>(new MappingVoidRequest()),
-            StatusCodes.Status204NoContent);
-    }
-
-    // The fallback is about the empty-response status only — a decorator must not change how a real
-    // payload is mapped.
-    [Fact]
-    public async Task SendAsApiResult_SenderWithoutOptionsAccessor_StillMapsNonEmptyResponsesNormally()
-    {
-        using var provider = CreateProvider(EmptyResponseStatusCode.Ok);
-        using var scope = provider.CreateScope();
-        var wrapper = new MappingPlainSenderWrapper(scope.ServiceProvider.GetRequiredService<ISender>());
-
-        var executed = await ResultExecution.ExecuteAsync(
-            await wrapper.SendAsApiResult(new MappingPayloadRequest { Value = "through-wrapper" }));
-
-        Assert.Equal(StatusCodes.Status200OK, executed.StatusCode);
-        Assert.Equal("through-wrapper", executed.Json.GetProperty("name").GetString());
-    }
-
-    // ...and the documented fix: implement IMediatorOptionsAccessor on the decorator and forward, and the
-    // configured status is honored again.
-    [Fact]
-    public async Task SendAsApiResult_SenderForwardingTheOptionsAccessor_HonorsTheConfiguredStatus()
-    {
-        using var provider = CreateProvider(EmptyResponseStatusCode.Ok);
-        using var scope = provider.CreateScope();
-        var wrapper = new MappingForwardingSenderWrapper(scope.ServiceProvider.GetRequiredService<ISender>());
-
-        await AssertEmptyResponseAsync(
-            await wrapper.SendAsApiResult((object)new MappingVoidRequest()),
-            StatusCodes.Status200OK);
-        await AssertEmptyResponseAsync(
-            await wrapper.SendAsApiResult<MappingNullResponseRequest, string?>(new MappingNullResponseRequest()),
-            StatusCodes.Status200OK);
-        await AssertEmptyResponseAsync(
-            await wrapper.SendAsApiResult<MappingVoidRequest>(new MappingVoidRequest()),
-            StatusCodes.Status200OK);
-    }
-
-    // Options coming from a hand-written accessor never went through MediatorOptionsValidator, so this is
-    // the one way an undefined status reaches the mapper at request time.
-    [Fact]
-    public async Task SendAsApiResult_ObjectOverloadWithAnUndefinedAccessorStatus_Throws()
-    {
-        var sender = new MappingUnvalidatedOptionsSender((EmptyResponseStatusCode)201);
-
-        // Cast to object so this is the ISender/object overload and not the generic void one.
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => sender.SendAsApiResult((object)new MappingVoidRequest()));
-
-        Assert.Contains("200 OK", exception.Message);
-        Assert.Contains("204 No Content", exception.Message);
-    }
-
-    [Fact]
-    public async Task SendAsApiResult_VoidOverloadWithAnUndefinedAccessorStatus_Throws()
-    {
-        var sender = new MappingUnvalidatedOptionsSender((EmptyResponseStatusCode)201);
-
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => sender.SendAsApiResult<MappingVoidRequest>(new MappingVoidRequest()));
-
-        Assert.Contains("200 OK", exception.Message);
-        Assert.Contains("204 No Content", exception.Message);
-    }
-
-    // The third overload reaches the same guard by a different route — through a null response rather than
-    // through a void request — so it needs its own case or one of the three can silently stop checking.
-    [Fact]
-    public async Task SendAsApiResult_TypedOverloadWithAnUndefinedAccessorStatus_Throws()
-    {
-        var sender = new MappingUnvalidatedOptionsSender((EmptyResponseStatusCode)201);
-
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => sender.SendAsApiResult<MappingNullResponseRequest, string?>(new MappingNullResponseRequest()));
-
-        Assert.Contains("200 OK", exception.Message);
-        Assert.Contains("204 No Content", exception.Message);
+        AssertEmpty(await GetAsync(app, "raw"), StatusCodes.Status200OK);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1073,24 +801,18 @@ public sealed class MappingApiResultTests
         return webDefaults ? new JsonSerializerOptions(JsonSerializerDefaults.Web) : new JsonSerializerOptions();
     }
 
-    /// <summary>An empty response carries the status and nothing else — no body, no content type.</summary>
-    private static async Task AssertEmptyResponseAsync(IResult result, int expectedStatusCode)
-    {
-        var executed = await ResultExecution.ExecuteAsync(result);
-
-        Assert.Equal(expectedStatusCode, executed.StatusCode);
-        Assert.Equal(string.Empty, executed.Body);
-        Assert.Null(executed.ContentType);
-    }
-
     /// <summary>
-    /// A container with the mediator and only this file's handlers. Registered by hand rather than by
-    /// scanning this assembly, which would also pull in every sibling test file's handlers.
+    /// An app with the mediator, the exception middleware and only this file's handlers, registered by hand rather than
+    /// by scanning this assembly, which would also pull in every sibling test file's handlers.
     /// </summary>
-    private static ServiceProvider CreateProvider(EmptyResponseStatusCode? emptyResponseStatusCode = null)
+    private static async Task<WebApplication> StartAppAsync(
+        EmptyResponseStatusCode? emptyResponseStatusCode,
+        Action<WebApplication> map,
+        Action<IServiceCollection>? configure = null)
     {
-        var services = new ServiceCollection();
-        services.AddLogging();
+        var builder = TestApps.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        var services = builder.Services;
 
         if (emptyResponseStatusCode is { } configured)
             services.AddMediator(options => options.EmptyResponseStatusCode = configured);
@@ -1102,7 +824,7 @@ public sealed class MappingApiResultTests
         services.AddTransient<IRequestHandler<MappingResultRequest, IResult>, MappingResultRequestHandler>();
         services.AddTransient<IRequestHandler<MappingErrorResponseRequest, ErrorResponse>, MappingErrorResponseRequestHandler>();
         services.AddTransient<IRequestHandler<MappingThrowingRequest, MappingPayload>, MappingThrowingRequestHandler>();
-        services.AddTransient<IRequestHandler<MappingCancellationRequest, string>, MappingCancellationRequestHandler>();
+        services.AddTransient<IRequestHandler<MappingTextRequest, string>, MappingTextRequestHandler>();
         services.AddTransient<IRequestHandler<MappingNullableIntRequest, int?>, MappingNullableIntRequestHandler>();
         services.AddTransient<IRequestHandler<MappingPagedRequest, MultiResponse<string>>, MappingPagedRequestHandler>();
         services.AddTransient<IRequestHandler<MappingShortCircuitRequest, object>, MappingShortCircuitRequestHandler>();
@@ -1110,9 +832,37 @@ public sealed class MappingApiResultTests
         services.AddTransient<IPipelineBehavior<MappingShortCircuitRequest, object>, MappingShortCircuitBehavior>();
         services.AddTransient<IRequestHandler<MappingVoidRequest>, MappingVoidRequestHandler>();
         services.AddTransient<IRequestHandler<MappingThrowingVoidRequest>, MappingThrowingVoidRequestHandler>();
-        services.AddTransient<IRequestHandler<MappingCancellationVoidRequest>, MappingCancellationVoidRequestHandler>();
+        configure?.Invoke(services);
 
-        return services.BuildServiceProvider(validateScopes: true);
+        var app = builder.Build();
+        app.UsePhoenixExceptionHandling();
+        map(app);
+        await app.StartAsync();
+        return app;
+    }
+
+    private static async Task<HttpAnswer> GetAsync(WebApplication app, string path)
+    {
+        using var client = app.GetTestClient();
+        using var response = await client.GetAsync(path);
+
+        return new HttpAnswer((int)response.StatusCode, response.Content.Headers.ContentType?.MediaType, await response.Content.ReadAsStringAsync());
+    }
+
+    /// <summary>An empty response carries the status and nothing else — no body, no content type.</summary>
+    private static void AssertEmpty(HttpAnswer answer, int expectedStatusCode)
+    {
+        Assert.Equal(expectedStatusCode, answer.StatusCode);
+        Assert.Equal(string.Empty, answer.Body);
+        Assert.Null(answer.ContentType);
+    }
+
+    private static string[] MemberNames(JsonElement json)
+        => json.EnumerateObject().Select(static member => member.Name).Order(StringComparer.Ordinal).ToArray();
+
+    private sealed record HttpAnswer(int StatusCode, string? ContentType, string Body)
+    {
+        public JsonElement Json => JsonDocument.Parse(Body).RootElement.Clone();
     }
 }
 
@@ -1178,17 +928,13 @@ public sealed class MappingThrowingRequestHandler : IRequestHandler<MappingThrow
         => throw new InvalidOperationException(Message);
 }
 
-public sealed class MappingCancellationRequest : IRequest<string>
+public sealed class MappingTextRequest : IRequest<string>
 {
 }
 
-public sealed class MappingCancellationRequestHandler : IRequestHandler<MappingCancellationRequest, string>
+public sealed class MappingTextRequestHandler : IRequestHandler<MappingTextRequest, string>
 {
-    public Task<string> Handle(MappingCancellationRequest request, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult("was not cancelled");
-    }
+    public Task<string> Handle(MappingTextRequest request, CancellationToken cancellationToken) => Task.FromResult("hello");
 }
 
 public sealed class MappingVoidRequest : IRequest
@@ -1208,19 +954,6 @@ public sealed class MappingThrowingVoidRequestHandler : IRequestHandler<MappingT
 {
     public Task Handle(MappingThrowingVoidRequest request, CancellationToken cancellationToken)
         => throw new HttpResponseException(new ErrorResponse(HttpStatusCode.NotFound, ["missing"]));
-}
-
-public sealed class MappingCancellationVoidRequest : IRequest
-{
-}
-
-public sealed class MappingCancellationVoidRequestHandler : IRequestHandler<MappingCancellationVoidRequest>
-{
-    public Task Handle(MappingCancellationVoidRequest request, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        return Task.CompletedTask;
-    }
 }
 
 /// <summary>A request whose response is a nullable value type: null means "nothing", 0 does not.</summary>
@@ -1297,7 +1030,7 @@ public sealed class MappingCustomResult : IResult
     }
 }
 
-/// <summary>An ISender decorator that forgets to implement IMediatorOptionsAccessor.</summary>
+/// <summary>An app's ISender decorator: it forwards every send and knows nothing about the mediator's options.</summary>
 public sealed class MappingPlainSenderWrapper(ISender inner) : ISender
 {
     public Task<object?> Send(object request, CancellationToken cancellationToken = default)
@@ -1312,41 +1045,3 @@ public sealed class MappingPlainSenderWrapper(ISender inner) : ISender
         => inner.Send<TRequest>(request, cancellationToken);
 }
 
-/// <summary>The decorator the IMediatorOptionsAccessor doc comment asks for: it forwards the options.</summary>
-public sealed class MappingForwardingSenderWrapper(ISender inner) : ISender, IMediatorOptionsAccessor
-{
-    public MediatorOptions Options => inner is IMediatorOptionsAccessor accessor
-        ? accessor.Options
-        : throw new InvalidOperationException("The inner sender does not expose mediator options.");
-
-    public Task<object?> Send(object request, CancellationToken cancellationToken = default)
-        => inner.Send(request, cancellationToken);
-
-    public Task<TResponse> Send<TRequest, TResponse>(TRequest request, CancellationToken cancellationToken = default)
-        where TRequest : IRequest<TResponse>
-        => inner.Send<TRequest, TResponse>(request, cancellationToken);
-
-    public Task Send<TRequest>(TRequest request, CancellationToken cancellationToken = default)
-        where TRequest : IRequest
-        => inner.Send<TRequest>(request, cancellationToken);
-}
-
-/// <summary>
-/// An ISender that reports options MediatorOptionsValidator never saw — what a hand-rolled accessor can
-/// do. It never reaches a handler; only the options it exposes matter here.
-/// </summary>
-public sealed class MappingUnvalidatedOptionsSender(EmptyResponseStatusCode emptyResponseStatusCode) : ISender, IMediatorOptionsAccessor
-{
-    public MediatorOptions Options { get; } = new MediatorOptions { EmptyResponseStatusCode = emptyResponseStatusCode };
-
-    public Task<object?> Send(object request, CancellationToken cancellationToken = default)
-        => Task.FromResult<object?>(null);
-
-    public Task<TResponse> Send<TRequest, TResponse>(TRequest request, CancellationToken cancellationToken = default)
-        where TRequest : IRequest<TResponse>
-        => Task.FromResult<TResponse>(default!);
-
-    public Task Send<TRequest>(TRequest request, CancellationToken cancellationToken = default)
-        where TRequest : IRequest
-        => Task.CompletedTask;
-}

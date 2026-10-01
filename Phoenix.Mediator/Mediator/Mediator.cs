@@ -5,7 +5,7 @@ using Phoenix.Mediator.Abstractions;
 
 namespace Phoenix.Mediator.Mediator;
 
-public sealed class Mediator(IServiceProvider serviceProvider, IOptions<MediatorOptions> options) : ISender, IMediatorOptionsAccessor
+public sealed class Mediator(IServiceProvider serviceProvider, IOptions<MediatorOptions> options) : ISender
 {
     // Per request-type wrapper objects. Built once per type, then dispatched via a virtual
     // call — no per-request reflection (MethodInfo.Invoke), no object[] arg allocation.
@@ -217,7 +217,7 @@ public sealed class Mediator(IServiceProvider serviceProvider, IOptions<Mediator
         if (isService is not null && !isService.IsService(typeof(IRequestBehavior<TRequest>)))
             return [];
 
-        return serviceProvider.GetServices<IRequestBehavior<TRequest>>().ToArray();
+        return [.. serviceProvider.GetServices<IRequestBehavior<TRequest>>()];
     }
 
     /// <summary>
@@ -229,7 +229,7 @@ public sealed class Mediator(IServiceProvider serviceProvider, IOptions<Mediator
     private int[] PositionsOf(Type serviceType, object[] behaviors, bool isRequestBehavior)
     {
         if (behaviorOrder is null)
-            return Enumerable.Repeat(isRequestBehavior ? int.MinValue : int.MaxValue, behaviors.Length).ToArray();
+            return [.. Enumerable.Repeat(isRequestBehavior ? int.MinValue : int.MaxValue, behaviors.Length)];
 
         var registered = behaviorOrder.PositionsFor(serviceType);
         if (registered.Length == behaviors.Length)

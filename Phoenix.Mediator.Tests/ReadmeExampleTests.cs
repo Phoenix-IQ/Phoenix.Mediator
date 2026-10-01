@@ -329,7 +329,7 @@ public sealed class ReadmeExampleTests
     // ---------------------------------------------------------------------------------------------
 
     // The README's GreetingEndpoints group, end to end over a real HTTP request: [AsParameters] binds the
-    // query string into the mediator request and SendAsApiResult turns the response into a 200 JSON body.
+    // query string into the mediator request and the endpoint helper turns the response into a 200 JSON body.
     [Fact]
     public async Task GreetingEndpoints_ReturnsTheGreetingOverHttp()
     {
@@ -401,7 +401,7 @@ public sealed class ReadmeExampleTests
         await using var app = builder.Build();
 
         app.MapGroup("readme-defaultpipeline").Get("missing", (ISender sender, CancellationToken ct) =>
-            sender.SendAsApiResult(new ReadmeMissingStudentQuery(), ct));
+            sender.Send(new ReadmeMissingStudentQuery(), ct));
         app.MapEndpoints();
 
         await app.StartAsync();
@@ -422,7 +422,7 @@ public sealed class ReadmeExampleTests
         await using var app = builder.Build();
 
         app.MapGroup("readme-nopipeline").Get("missing", (ISender sender, CancellationToken ct) =>
-            sender.SendAsApiResult(new ReadmeMissingStudentQuery(), ct));
+            sender.Send(new ReadmeMissingStudentQuery(), ct));
 
         app.MapEndpoints(new MapEndpointsOptions
         {
@@ -453,7 +453,7 @@ public sealed class ReadmeExampleTests
 
         app.UsePhoenixExceptionHandling();
         app.MapGroup("readme-manualpipeline").Get("missing", (ISender sender, CancellationToken ct) =>
-            sender.SendAsApiResult(new ReadmeMissingStudentQuery(), ct));
+            sender.Send(new ReadmeMissingStudentQuery(), ct));
 
         await app.StartAsync();
         using var client = app.GetTestClient();
@@ -514,7 +514,7 @@ public sealed class ReadmeExampleTests
         app.UsePhoenixExceptionHandling();
         app.MapPhoenixHealthChecks("/readme-composed-health");
         app.MapGroup("readme-composed").Get("missing", (ISender sender, CancellationToken ct) =>
-            sender.SendAsApiResult(new ReadmeMissingStudentQuery(), ct));
+            sender.Send(new ReadmeMissingStudentQuery(), ct));
 
         app.MapEndpoints(
             new MapEndpointsOptions { UseExceptionHandling = false, MapHealthChecks = false },
@@ -779,8 +779,8 @@ public sealed class ReadmeExampleTests
         Assert.Equal("Hello Ada", greeting.Result);
     }
 
-    // "IRequest (no response): returns a plain Task." The README leans on this to explain why
-    // (await sender.Send(command)).ToApiResult() does not compile, so the return type is part of the contract.
+    // "IRequest (no response): returns a plain Task." An endpoint returning it gets the configured empty status from
+    // the endpoint helpers, so the return type is part of the contract.
     // The void overload is the one-type-argument Send whose parameter IS its type argument; the other one-type-argument
     // Send takes an IRequest<TResponse>.
     [Fact]
@@ -810,7 +810,7 @@ public sealed class ReadmeExampleTests
         Assert.Equal(new[] { "handled" }, command.Handled.ToArray());
     }
 
-    // ISender.Send(object) is documented to return null for an IRequest, which is what lets ToApiResult()
+    // ISender.Send(object) is documented to return null for an IRequest, which is what lets the endpoint helpers
     // map it to an empty response at all.
     [Fact]
     public async Task Send_Object_ReturnsNullForRequestsWithoutAResponse()
@@ -822,50 +822,47 @@ public sealed class ReadmeExampleTests
         Assert.Null(await sender.Send((object)new ReadmeCompleteCommand(), CancellationToken.None));
     }
 
-    // The README's warning: "ToApiResult() maps null to 204 No Content without reading EmptyResponseStatusCode,
-    // but the endpoint helpers advertise the configured status in OpenAPI. With EmptyResponseStatusCode.Ok,
-    // the docs say 200 while the endpoint returns 204." Asserting the mismatch keeps the warning honest: if
-    // ToApiResult ever learns the configured status this test fails and the paragraph can be deleted.
+    // "IRequest (no response): returns configured empty response status on success (204 No Content by default, or
+    // 200 OK)". The OpenAPI document and the response come from the same setting, so they can't disagree.
     [Fact]
-    public async Task ToApiResult_ReturnsNoContentWhileTheEndpointHelpersAdvertiseTheConfiguredStatus()
+    public async Task EndpointHelpers_AnswerTheEmptyStatusTheyAdvertise()
     {
-        await using var app = CreateReadmeApp(options => options.EmptyResponseStatusCode = EmptyResponseStatusCode.Ok);
-        using var scope = app.Services.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        var builder = CreateReadmeBuilder(static options => options.EmptyResponseStatusCode = EmptyResponseStatusCode.Ok, useTestServer: true);
+        await using var app = builder.Build();
+        app.MapGroup("readme-empty-status").Post("complete", static (ISender sender, ReadmeCompleteCommand command, CancellationToken ct) =>
+            sender.Send(command, ct));
 
-        app.MapGroup("readme-footgun").Post("complete", (ISender inner, ReadmeCompleteCommand command, CancellationToken ct) =>
-            inner.SendAsApiResult(command, ct));
-
-        var advertised = app.Endpoint("readme-footgun/complete").Metadata
+        var advertised = app.Endpoint("readme-empty-status/complete").Metadata
             .OfType<IProducesResponseTypeMetadata>()
             .Select(static metadata => metadata.StatusCode)
             .ToArray();
 
-        var viaToApiResult = (await sender.Send((object)new ReadmeCompleteCommand(), CancellationToken.None)).ToApiResult();
-        var viaSendAsApiResult = await sender.SendAsApiResult(new ReadmeCompleteCommand(), CancellationToken.None);
+        await app.StartAsync();
+        using var client = app.GetTestClient();
+        var response = await client.PostAsync("readme-empty-status/complete", new StringContent("{}", Encoding.UTF8, "application/json"));
 
         Assert.Contains(StatusCodes.Status200OK, advertised);
-        Assert.Equal(StatusCodes.Status204NoContent, ResultExecution.StatusCode(viaToApiResult));
-        Assert.Equal(StatusCodes.Status200OK, ResultExecution.StatusCode(viaSendAsApiResult));
+        Assert.DoesNotContain(StatusCodes.Status204NoContent, advertised);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
-    // "In endpoints, use SendAsApiResult. It sends the request through the mediator and maps the result to an
-    // IResult."
+    // "In endpoints, return what sender.Send(...) returns. The endpoint helpers map it to an IResult."
     [Fact]
-    public async Task SendAsApiResult_MapsTheHandlerResponseToAJsonResult()
+    public async Task EndpointHelpers_MapWhatSendReturnsToAJsonResult()
     {
-        await using var provider = CreateReadmeProvider();
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        var builder = CreateReadmeBuilder(useTestServer: true);
+        await using var app = builder.Build();
+        app.MapGroup("readme-send").Get("greeting", static (ISender sender, CancellationToken ct) =>
+            sender.Send(new ReadmeGetGreetingQuery { Name = "Ada" }, ct));
+        await app.StartAsync();
+        using var client = app.GetTestClient();
 
-        IResult result = await sender.SendAsApiResult(new ReadmeGetGreetingQuery { Name = "Ada" }, CancellationToken.None);
+        var response = await client.GetAsync("readme-send/greeting");
 
-        var executed = await ResultExecution.ExecuteAsync(result);
-
-        Assert.Equal(StatusCodes.Status200OK, executed.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         // The mapped result is the handler's response serialized as JSON, not a body that happens to mention
         // the name: a client reads "result", so a rewrapped or flattened body is a breaking change.
-        Assert.Equal("Hello Ada", executed.Json.GetProperty("result").GetString());
+        Assert.Equal("Hello Ada", JsonBody(await response.Content.ReadAsStringAsync()).GetProperty("result").GetString());
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -881,7 +878,7 @@ public sealed class ReadmeExampleTests
 
         app.UsePhoenixExceptionHandling();
         app.MapGroup("readme-responses").Get("greeting", (ISender sender, [AsParameters] ReadmeGetGreetingQuery query, CancellationToken ct) =>
-            sender.SendAsApiResult(query, ct));
+            sender.Send(query, ct));
 
         await app.StartAsync();
         using var client = app.GetTestClient();
@@ -905,12 +902,12 @@ public sealed class ReadmeExampleTests
 
         app.UsePhoenixExceptionHandling();
         app.MapGroup("readme-empty").Post("complete", (ISender sender, ReadmeCompleteCommand command, CancellationToken ct) =>
-            sender.SendAsApiResult(command, ct));
+            sender.Send(command, ct));
 
         await app.StartAsync();
         using var client = app.GetTestClient();
 
-        var response = await client.PostAsync("readme-empty/complete", JsonContent("{}"));
+        var response = await client.PostAsync("readme-empty/complete", new StringContent("{}", Encoding.UTF8, "application/json"));
 
         Assert.Equal(expected, response.StatusCode);
         // "No response" has to mean no body as well: a serialized "null" here would break every client that
@@ -919,7 +916,7 @@ public sealed class ReadmeExampleTests
     }
 
     // "Built-in exception types: BadRequestException, NotFoundException" mapped by the middleware, not caught
-    // by SendAsApiResult.
+    // by the endpoint helpers.
     [Fact]
     public async Task NotFoundException_MapsToNotFoundWithTheDocumentedErrorBody()
     {
@@ -928,7 +925,7 @@ public sealed class ReadmeExampleTests
 
         app.UsePhoenixExceptionHandling();
         app.MapGroup("readme-errors").Get("missing", (ISender sender, CancellationToken ct) =>
-            sender.SendAsApiResult(new ReadmeMissingStudentQuery(), ct));
+            sender.Send(new ReadmeMissingStudentQuery(), ct));
 
         await app.StartAsync();
         using var client = app.GetTestClient();
@@ -948,7 +945,7 @@ public sealed class ReadmeExampleTests
 
         app.UsePhoenixExceptionHandling();
         app.MapGroup("readme-errors").Get("invalid", (ISender sender, CancellationToken ct) =>
-            sender.SendAsApiResult(new ReadmeInvalidStudentQuery(), ct));
+            sender.Send(new ReadmeInvalidStudentQuery(), ct));
 
         await app.StartAsync();
         using var client = app.GetTestClient();
@@ -970,7 +967,7 @@ public sealed class ReadmeExampleTests
 
         app.UsePhoenixExceptionHandling();
         app.MapGroup("readme-errors").Get("shape", (ISender sender, CancellationToken ct) =>
-            sender.SendAsApiResult(new ReadmeMissingStudentQuery(), ct));
+            sender.Send(new ReadmeMissingStudentQuery(), ct));
 
         await app.StartAsync();
         using var client = app.GetTestClient();
@@ -1054,17 +1051,19 @@ public sealed class ReadmeExampleTests
         Assert.Equal("Unknown error occurred", response.Json.GetProperty("errors")[0].GetString());
     }
 
-    // "SendAsApiResult doesn't catch exceptions, it lets them propagate" - the whole reason the middleware has
-    // to be registered. Without this, an app that skipped the middleware would still look fine in tests.
+    // "The helpers don't catch exceptions, they let them propagate" - the whole reason the middleware has to be
+    // registered. Without this, an app that skipped the middleware would still look fine in tests.
     [Fact]
-    public async Task SendAsApiResult_LetsHandlerExceptionsPropagate()
+    public async Task EndpointHelpers_LetHandlerExceptionsPropagate()
     {
-        await using var provider = CreateReadmeProvider();
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        var builder = CreateReadmeBuilder(useTestServer: true);
+        await using var app = builder.Build();
+        app.MapGroup("readme-propagate").Get("missing", static (ISender sender, CancellationToken ct) =>
+            sender.Send(new ReadmeMissingStudentQuery(), ct));
+        await app.StartAsync();
+        using var client = app.GetTestClient();
 
-        await Assert.ThrowsAsync<NotFoundException>(() =>
-            sender.SendAsApiResult(new ReadmeMissingStudentQuery(), CancellationToken.None));
+        await Assert.ThrowsAsync<NotFoundException>(() => client.GetAsync("readme-propagate/missing"));
     }
 
     // "Built-in exception types": each one's status, as the list states it.
@@ -1192,7 +1191,7 @@ public sealed class ReadmeExampleTests
         await using var app = CreateReadmeApp();
 
         app.MapGroup("readme-infer").Get("greeting", (ISender sender, [AsParameters] ReadmeGetGreetingQuery query, CancellationToken ct) =>
-            sender.SendAsApiResult(query, ct));
+            sender.Send(query, ct));
 
         var responses = app.Endpoint("readme-infer/greeting").Metadata.OfType<IProducesResponseTypeMetadata>().ToArray();
 
@@ -1201,16 +1200,9 @@ public sealed class ReadmeExampleTests
         Assert.Single(responses, metadata => metadata.StatusCode == StatusCodes.Status200OK
             && metadata.Type == typeof(SingleResponse<string>));
 
-        // .NET 9 also infers a 200 from the delegate's own Task<IResult> return type, and AddResponses only
-        // strips an inferred 200 when it is NOT declaring one itself. The published document then carries two
-        // 200 entries there, the extra one schema-less. Pinned per framework so the difference is a known wart
-        // rather than something that quietly appears and disappears between target frameworks.
-        var successCount = responses.Count(metadata => metadata.StatusCode == StatusCodes.Status200OK);
-#if NET9_0
-        Assert.Equal(2, successCount);
-#else
-        Assert.Equal(1, successCount);
-#endif
+        // The framework infers a 200 of its own from the delegate's Task<SingleResponse<string>> (and, on .NET 9, a
+        // schema-less one from a Task<IResult>). AddResponses drops it next to the declared one, on every framework.
+        Assert.Equal(1, responses.Count(metadata => metadata.StatusCode == StatusCodes.Status200OK));
     }
 
     // "IRequest => configured empty response status". The negative half matters just as much: advertising both
@@ -1226,7 +1218,7 @@ public sealed class ReadmeExampleTests
         await using var app = CreateReadmeApp(options => options.EmptyResponseStatusCode = configured);
 
         app.MapGroup("readme-inferempty").Post("complete", (ISender sender, ReadmeCompleteCommand command, CancellationToken ct) =>
-            sender.SendAsApiResult(command, ct));
+            sender.Send(command, ct));
 
         var statusCodes = SuccessAndErrorStatusCodes(app, "readme-inferempty/complete");
 
@@ -1242,7 +1234,7 @@ public sealed class ReadmeExampleTests
         await using var app = CreateReadmeApp();
 
         app.MapGroup("readme-explicit").Post("students", (ISender sender, ReadmeCreateStudentCommand command, CancellationToken ct) =>
-            sender.SendAsApiResult(command, ct), new ResponseDto(StatusCodes.Status201Created, typeof(SingleResponse<string>)));
+            sender.Send(command, ct), new ResponseDto(StatusCodes.Status201Created, typeof(SingleResponse<string>)));
 
         var metadata = app.Endpoint("readme-explicit/students").Metadata.OfType<IProducesResponseTypeMetadata>().ToArray();
 
@@ -1303,7 +1295,7 @@ public sealed class ReadmeExampleTests
 
         app.MapGroup("readme-uploads").PostMultiPart("documents",
             async (ISender sender, [FromForm] ReadmeUploadDocumentCommand command, CancellationToken ct) =>
-                await sender.SendAsApiResult(command, ct), disableAntiforgery: true);
+                await sender.Send(command, ct), disableAntiforgery: true);
 
         var endpoint = app.Endpoint("readme-uploads/documents");
 
@@ -1327,7 +1319,7 @@ public sealed class ReadmeExampleTests
 
         app.MapGroup("readme-uploads").PostMultiPart("large",
             async (ISender sender, [FromForm] ReadmeUploadDocumentCommand command, CancellationToken ct) =>
-                await sender.SendAsApiResult(command, ct),
+                await sender.Send(command, ct),
             maxRequestBodySize: 50_000_000,
             timeoutSeconds: 300,
             disableAntiforgery: true);
@@ -1352,7 +1344,7 @@ public sealed class ReadmeExampleTests
 
         app.MapGroup("readme-upload-http").PostMultiPart("documents",
             async (ISender sender, IFormCollection form, CancellationToken ct) =>
-                await sender.SendAsApiResult(
+                await sender.Send(
                     new ReadmeUploadDocumentCommand { File = form.Files["file"], Title = form["title"].ToString() },
                     ct),
             disableAntiforgery: true);
@@ -1383,7 +1375,7 @@ public sealed class ReadmeExampleTests
 
         var group = app.MapGroup("readme-multipartverbs");
         Delegate handler = async (ISender sender, [FromForm] ReadmeUploadDocumentCommand command, CancellationToken ct) =>
-            await sender.SendAsApiResult(command, ct);
+            await sender.Send(command, ct);
 
         switch (verb)
         {
@@ -1415,7 +1407,7 @@ public sealed class ReadmeExampleTests
 
         app.MapGroup("readme-uploads").PostMultiPart("unprotected",
             async (ISender sender, [FromForm] ReadmeUploadDocumentCommand command, CancellationToken ct) =>
-                await sender.SendAsApiResult(command, ct));
+                await sender.Send(command, ct));
 
         Assert.Contains(logs.Warnings, entry => entry.Message.Contains("antiforgery", StringComparison.OrdinalIgnoreCase));
     }
@@ -1432,7 +1424,7 @@ public sealed class ReadmeExampleTests
 
         app.MapGroup("readme-uploads").PostMultiPart("documents",
             async (ISender sender, [FromForm] ReadmeUploadDocumentCommand command, CancellationToken ct) =>
-                await sender.SendAsApiResult(command, ct), disableAntiforgery: true);
+                await sender.Send(command, ct), disableAntiforgery: true);
 
         Assert.DoesNotContain(logs.Warnings, entry => entry.Message.Contains("antiforgery", StringComparison.OrdinalIgnoreCase));
     }
@@ -1472,7 +1464,7 @@ public sealed class ReadmeExampleTests
         await using var app = builder.Build();
 
         app.MapGroup("readme-students").Patch("{id}", (ISender sender, int id, ReadmeUpdateStudentCommand command, CancellationToken ct) =>
-            sender.SendAsApiResult(command with { Id = id }, ct));
+            sender.Send(command with { Id = id }, ct));
 
         await app.StartAsync();
         using var client = app.GetTestClient();
@@ -1491,7 +1483,7 @@ public sealed class ReadmeExampleTests
         await using var app = builder.Build();
 
         app.MapGroup("readme-positional").Patch("{id}", (ISender sender, int id, ReadmeUpdateStudentPositionalCommand command, CancellationToken ct) =>
-            sender.SendAsApiResult(command with { Id = id }, ct));
+            sender.Send(command with { Id = id }, ct));
 
         await app.StartAsync();
         using var client = app.GetTestClient();
@@ -1511,7 +1503,7 @@ public sealed class ReadmeExampleTests
         await using var app = builder.Build();
 
         app.MapGroup("readme-asparameters").Patch("{id}", (ISender sender, [AsParameters] ReadmeUpdateStudentBodyCommand command, CancellationToken ct) =>
-            sender.SendAsApiResult(command, ct));
+            sender.Send(command, ct));
 
         await app.StartAsync();
         using var client = app.GetTestClient();
@@ -1532,7 +1524,7 @@ public sealed class ReadmeExampleTests
         app.MapGroup("readme-settable").Patch("{id}", (ISender sender, int id, ReadmeSettableStudentCommand command, CancellationToken ct) =>
         {
             command.Id = id;
-            return sender.SendAsApiResult(command, ct);
+            return sender.Send(command, ct);
         });
 
         await app.StartAsync();
@@ -1553,7 +1545,7 @@ public sealed class ReadmeExampleTests
         await using var app = builder.Build();
 
         app.MapGroup("readme-initonly").Patch("{id}", (ISender sender, int id, ReadmeInitOnlyStudentCommand command, CancellationToken ct) =>
-            sender.SendAsApiResult(command, ct));
+            sender.Send(command, ct));
 
         await app.StartAsync();
         using var client = app.GetTestClient();
@@ -1573,7 +1565,7 @@ public sealed class ReadmeExampleTests
         await using var app = builder.Build();
 
         app.MapGroup("readme-forgotten").Patch("{id}", (ISender sender, int id, ReadmeUpdateStudentCommand command, CancellationToken ct) =>
-            sender.SendAsApiResult(command, ct));
+            sender.Send(command, ct));
 
         await app.StartAsync();
         using var client = app.GetTestClient();
@@ -1592,7 +1584,7 @@ public sealed class ReadmeExampleTests
         await using var app = builder.Build();
 
         app.MapGroup("readme-formbound").Post("{id}", (ISender sender, [FromForm] ReadmeSettableStudentCommand command, CancellationToken ct) =>
-            sender.SendAsApiResult(command, ct)).DisableAntiforgery();
+            sender.Send(command, ct)).DisableAntiforgery();
 
         await app.StartAsync();
         using var client = app.GetTestClient();
@@ -1767,7 +1759,7 @@ public sealed class ReadmeExampleTests
 
         app.UsePhoenixExceptionHandling();
         app.MapGroup("readme-validation").Post("students", (ISender sender, ReadmeCreateStudentCommand command, CancellationToken ct) =>
-            sender.SendAsApiResult(command, ct));
+            sender.Send(command, ct));
 
         await app.StartAsync();
         using var client = app.GetTestClient();
@@ -1791,7 +1783,7 @@ public sealed class ReadmeExampleTests
 
         app.UsePhoenixExceptionHandling();
         app.MapGroup("readme-validation").Post("students", (ISender sender, ReadmeCreateStudentCommand command, CancellationToken ct) =>
-            sender.SendAsApiResult(command, ct));
+            sender.Send(command, ct));
 
         await app.StartAsync();
         using var client = app.GetTestClient();
@@ -2270,7 +2262,7 @@ public sealed class ReadmeExampleTests
         app.UsePhoenixExceptionHandling();
 
         var errors = app.MapGroup("readme-errors");
-        errors.Post("subscribe", (ISender sender, ReadmeSubscribeCommand command, CancellationToken ct) => sender.SendAsApiResult(command, ct));
+        errors.Post("subscribe", (ISender sender, ReadmeSubscribeCommand command, CancellationToken ct) => sender.Send(command, ct));
         errors.MapGet("concurrency", () => { throw new ReadmeStandIns.DbUpdateConcurrencyException("0 rows were affected."); });
         errors.MapGet("circuit", () => { throw new ReadmeStandIns.BrokenCircuitException("The circuit is now open."); });
         errors.MapGet("argument", () => { throw new ArgumentException("readme-argument"); });
@@ -2779,7 +2771,7 @@ public static class ReadmeHost<TMarker>
         {
             app.MapGroup(GroupName)
                 .Get("hello", async (ISender sender, [AsParameters] ReadmeGetGreetingQuery query, CancellationToken ct) =>
-                    await sender.SendAsApiResult(query, ct));
+                    await sender.Send(query, ct));
         }
     }
 
@@ -2790,12 +2782,12 @@ public static class ReadmeHost<TMarker>
         {
             app.MapGroup(GroupName)
                 .Get("admin/stats", (ISender sender, CancellationToken ct) =>
-                    sender.SendAsApiResult(new ReadmeGetGreetingQuery { Name = "stats" }, ct))
+                    sender.Send(new ReadmeGetGreetingQuery { Name = "stats" }, ct))
                 .RequireRole(ReadmeAppRole.Admin);                  // single role
 
             app.MapGroup(GroupName)
                 .Post("reports", (ISender sender, CancellationToken ct) =>
-                    sender.SendAsApiResult(new ReadmeGetGreetingQuery { Name = "reports" }, ct))
+                    sender.Send(new ReadmeGetGreetingQuery { Name = "reports" }, ct))
                 .RequireRole(ReadmeAppRole.Admin, ReadmeAppRole.Manager);  // OR - either role works
         }
     }

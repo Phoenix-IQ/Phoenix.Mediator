@@ -313,7 +313,7 @@ public sealed class ValidationBehaviorTests
         Assert.Same(sent, captured);
     }
 
-    // SendAsApiResult(sender, request) — what every generated endpoint calls — goes through the boxed
+    // An endpoint returning sender.Send((object)request) — what generated endpoints call — goes through the boxed
     // Send(object) overload, not the generic one. If validation only ran on the generic path, every HTTP
     // endpoint in an app would accept invalid input while the unit tests kept passing.
     [Fact]
@@ -427,7 +427,7 @@ public sealed class ValidationBehaviorTests
         Assert.Contains(SecondMessage, exception.Message);
     }
 
-    // The ErrorResponse is what the middleware and ToApiResult render from; if the status or the messages were
+    // The ErrorResponse is what the middleware renders from; if the status or the messages were
     // lost here, the HTTP response would not match the failure.
     [Fact]
     public async Task Handle_ValidationFailure_ErrorResponseCarriesBadRequestAndEveryMessage()
@@ -1036,23 +1036,9 @@ public sealed class ValidationBehaviorTests
     }
 
     // ----------------------------------------------------------------------------------------------
-    // How the failure actually reaches the client. The exception is only useful if the two renderers turn
+    // How the failure actually reaches the client. The exception is only useful if the middleware turns
     // it into the documented { "errors": [...] } 400 body.
     // ----------------------------------------------------------------------------------------------
-
-    [Fact]
-    public async Task ToApiResult_ValidationErrorResponse_WritesTheDocumentedErrorsBody()
-    {
-        var exception = await CaptureValidationFailure(FirstMessage, SecondMessage);
-
-        var executed = await ResultExecution.ExecuteAsync(exception.ErrorResponse.ToApiResult());
-
-        Assert.Equal(400, executed.StatusCode);
-        Assert.Contains("application/json", executed.ContentType!);
-        Assert.Equal(
-            new[] { FirstMessage, SecondMessage },
-            executed.Json.GetProperty("errors").EnumerateArray().Select(static error => error.GetString()!).ToArray());
-    }
 
     [Fact]
     public async Task ExceptionHandlingMiddleware_ValidationFailure_Writes400WithEveryMessage()

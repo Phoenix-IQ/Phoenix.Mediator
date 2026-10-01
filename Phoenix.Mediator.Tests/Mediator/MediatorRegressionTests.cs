@@ -193,29 +193,6 @@ public sealed class MediatorRegressionTests
         Assert.Equal("Unknown error occurred", message);
     }
 
-    [Fact]
-    public async Task SendAsApiResult_DefaultsEmptyRequestsToNoContent()
-    {
-        await using var app = CreateApp();
-        using var scope = app.Services.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-
-        var result = await sender.SendAsApiResult(new EmptyRequest());
-
-        AssertStatusCode(StatusCodes.Status204NoContent, result);
-    }
-
-    [Fact]
-    public async Task SendAsApiResult_CanReturnOkForEmptyRequests()
-    {
-        await using var app = CreateApp(options => options.EmptyResponseStatusCode = EmptyResponseStatusCode.Ok);
-        using var scope = app.Services.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-
-        var result = await sender.SendAsApiResult(new EmptyRequest());
-
-        AssertStatusCode(StatusCodes.Status200OK, result);
-    }
 
     [Fact]
     public async Task EndpointHelpers_InferConfiguredEmptyRequestResponseStatus()
@@ -454,13 +431,6 @@ public sealed class MediatorRegressionTests
         return provider.GetRequiredService<IOptions<HttpJsonOptions>>().Value.SerializerOptions;
     }
 
-    private static void AssertStatusCode(int expectedStatusCode, IResult result)
-    {
-        var statusCodeResult = Assert.IsAssignableFrom<IStatusCodeHttpResult>(result);
-
-        Assert.Equal(expectedStatusCode, statusCodeResult.StatusCode);
-    }
-
     private sealed class StartedResponseFeature : IHttpResponseFeature
     {
         public Stream Body { get; set; } = new MemoryStream();
@@ -581,7 +551,7 @@ public sealed class EmptyEndpoints : BaseEndpointGroup
     {
         app.MapGroup(GroupName)
             .Post("complete", async (ISender sender, EmptyRequest request, CancellationToken ct) =>
-                await sender.SendAsApiResult(request, ct));
+                await sender.Send(request, ct));
     }
 }
 

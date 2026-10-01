@@ -80,8 +80,8 @@ public sealed class ValidationExceptionMappingTests
 
         var app = builder.Build();
         app.UsePhoenixExceptionHandling();
-        app.MapGroup("vx").Post("self-validating", (ISender sender, VxSelfValidatingCommand command, CancellationToken ct) => sender.SendAsApiResult(command, ct));
-        app.MapGroup("vx").Post("message-only", (ISender sender, VxMessageOnlyCommand command, CancellationToken ct) => sender.SendAsApiResult(command, ct));
+        app.MapGroup("vx").Post("self-validating", (ISender sender, VxSelfValidatingCommand command, CancellationToken ct) => sender.Send(command, ct));
+        app.MapGroup("vx").Post("message-only", (ISender sender, VxMessageOnlyCommand command, CancellationToken ct) => sender.Send(command, ct));
         await app.StartAsync();
         return app;
     }

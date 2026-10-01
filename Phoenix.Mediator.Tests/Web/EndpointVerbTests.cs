@@ -289,7 +289,7 @@ public sealed class VerbEndpointTests
     }
 
     // The empty status is a per-application setting; the helpers must read the same MediatorOptions the
-    // runtime mapping (SendAsApiResult) uses, or the document promises a status the app never returns.
+    // runtime mapping (the helpers' result filter) uses, or the document promises a status the app never returns.
     [Theory]
     [InlineData(EmptyResponseStatusCode.NoContent, StatusCodes.Status204NoContent)]
     [InlineData(EmptyResponseStatusCode.Ok, StatusCodes.Status200OK)]

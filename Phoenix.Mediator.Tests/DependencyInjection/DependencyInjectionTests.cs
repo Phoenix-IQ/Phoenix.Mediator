@@ -367,8 +367,7 @@ public sealed class DiRegistrationTests
     }
 
     // ISender forwards to the scope's Mediator. Two instances would mean two option snapshots and two
-    // wrapper lookups per request, and IMediatorOptionsAccessor would read a different object than the
-    // one that handled the request.
+    // wrapper lookups per request.
     [Fact]
     public void ISender_AndTheConcreteMediator_AreTheSameInstanceWithinAScope()
     {
@@ -394,7 +393,7 @@ public sealed class DiRegistrationTests
     }
 
     // ISender is registered with TryAdd, so an app that decorates or replaces it keeps its own
-    // implementation — the extension point the IMediatorOptionsAccessor docs point at. The concrete
+    // implementation. The concrete
     // Mediator still has to be registered, otherwise a decorator has nothing to forward to.
     [Fact]
     public void AddMediator_KeepsAnISenderRegisteredBeforeIt()
@@ -596,7 +595,7 @@ public sealed class DiRegistrationTests
         Assert.Equal("pong", await sender.Send<DiPingRequest, string>(new DiPingRequest()));
         Assert.Equal(
             EmptyResponseStatusCode.Ok,
-            Assert.IsAssignableFrom<IMediatorOptionsAccessor>(sender).Options.EmptyResponseStatusCode);
+            Assert.IsType<global::Phoenix.Mediator.Mediator.Mediator>(sender).Options.EmptyResponseStatusCode);
     }
 
     // ------------------------------------------------------------------
@@ -731,7 +730,7 @@ public sealed class DiRegistrationTests
         Assert.Equal(configured, provider.GetRequiredService<IOptions<MediatorOptions>>().Value.EmptyResponseStatusCode);
     }
 
-    // Anything else would make SendAsApiResult write a status the API contract never promised, so the
+    // Anything else would make the endpoint helpers write a status the API contract never promised, so the
     // option is rejected instead of being silently coerced.
     [Theory]
     [InlineData(0)]
@@ -793,20 +792,6 @@ public sealed class DiRegistrationTests
             provider.GetRequiredService<IOptions<MediatorOptions>>().Value.EmptyResponseStatusCode);
     }
 
-    // The Web helpers read the options off the sender through this interface; if the mediator stopped
-    // implementing it, empty responses would silently fall back to 204 and ignore the app's configuration.
-    [Fact]
-    public void Mediator_ExposesTheConfiguredOptionsThroughTheOptionsAccessor()
-    {
-        using var provider = BuildProvider(static services =>
-            services.AddMediator(static options => options.EmptyResponseStatusCode = EmptyResponseStatusCode.Ok));
-        using var scope = provider.CreateScope();
-
-        var accessor = Assert.IsAssignableFrom<IMediatorOptionsAccessor>(scope.ServiceProvider.GetRequiredService<ISender>());
-
-        Assert.Equal(EmptyResponseStatusCode.Ok, accessor.Options.EmptyResponseStatusCode);
-    }
-
     // An invalid option does not stop the mediator from being constructed: the mediator holds IOptions<T>
     // and reads .Value lazily, so the failure surfaces the first time the accessor is read — which is on
     // the first request that maps an empty response, not at startup. Worth knowing when reading a bug
@@ -818,9 +803,9 @@ public sealed class DiRegistrationTests
             services.AddMediator(static options => options.EmptyResponseStatusCode = (EmptyResponseStatusCode)201));
         using var scope = provider.CreateScope();
 
-        var accessor = Assert.IsAssignableFrom<IMediatorOptionsAccessor>(scope.ServiceProvider.GetRequiredService<ISender>());
+        var mediator = Assert.IsType<global::Phoenix.Mediator.Mediator.Mediator>(scope.ServiceProvider.GetRequiredService<ISender>());
 
-        Assert.Throws<OptionsValidationException>(() => accessor.Options);
+        Assert.Throws<OptionsValidationException>(() => mediator.Options);
     }
 
     // ------------------------------------------------------------------

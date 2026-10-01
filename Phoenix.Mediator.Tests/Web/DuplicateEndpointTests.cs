@@ -287,9 +287,9 @@ public sealed class DuplicateEndpointTests
         await app.StartAsync();
         using var client = app.GetTestClient();
 
-        // A minimal API endpoint returning a string writes it as text/plain, not JSON.
-        Assert.Equal("orders v1", await client.GetStringAsync("orders?api-version=1.0"));
-        Assert.Equal("orders v2", await client.GetStringAsync("orders?api-version=2.0"));
+        // The endpoint helpers write a returned string as JSON, like every other result.
+        Assert.Equal("\"orders v1\"", await client.GetStringAsync("orders?api-version=1.0"));
+        Assert.Equal("\"orders v2\"", await client.GetStringAsync("orders?api-version=2.0"));
     }
 
     // Documents the limit of the rule rather than a virtue: a policy that applies only might tell the endpoints apart.

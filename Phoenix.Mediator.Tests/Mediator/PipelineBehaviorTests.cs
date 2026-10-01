@@ -849,7 +849,7 @@ public sealed class PipelineBehaviorTests
     // ---------------------------------------------------------------------------------------
 
     // Mediator claims its RequestHandlerWrapper reuses the exact same SendInternal, so the boxed
-    // Send(object) — what SendAsApiResult and any polymorphic dispatch take — must not silently
+    // Send(object) — what an endpoint sending a request as object and any polymorphic dispatch take — must not silently
     // skip behaviors. Same request, both entry points, identical sequence.
     [Fact]
     public async Task Send_TypedAndBoxedOverloads_RunTheIdenticalBehaviorSequence()
@@ -1369,7 +1369,7 @@ public sealed class PipelineBehaviorTests
 
     // The boxed overload has no type argument to disambiguate with, so CreateWrapper decides: it looks
     // for IRequest<TResponse> FIRST and only falls back to the void wrapper. A dual request therefore
-    // runs the RESPONSE pipeline when sent as object — which is what SendAsApiResult relies on.
+    // runs the RESPONSE pipeline when sent as object — which is what an endpoint returning Send((object)request) relies on.
     [Fact]
     public async Task Send_BoxedDualRequest_UsesTheResponsePipelineNotTheVoidOne()
     {
