@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Phoenix.Mediator.Abstractions;
 using Phoenix.Mediator.Web;
+using System.ComponentModel;
 using System.Reflection;
 
 namespace Phoenix.Mediator.Mediator;
@@ -170,11 +171,15 @@ public static class ServiceCollectionExtensions
 
         if (assemblies.Length > 0)
         {
-            var newAssemblies = services.GetOrCreateAssemblyRegistry().AddAssemblies(assemblies.Distinct());
+            var registry = services.GetOrCreateAssemblyRegistry();
+            var newAssemblies = registry.AddAssemblies(assemblies.Distinct());
 
             if (newAssemblies.Length > 0)
             {
                 services.AddMediatorHandlers(newAssemblies);
+
+                foreach (var subscriber in registry.GetSubscribers())
+                    subscriber(services, newAssemblies);
             }
         }
 
@@ -190,7 +195,9 @@ public static class ServiceCollectionExtensions
     /// </para>
     /// <para>
     /// Only assemblies passed to <c>AddMediator(...)</c> (or to <c>MapEndpoints(...)</c>) are scanned for
-    /// endpoint groups. Registering handlers through this method alone does not make its endpoint groups discoverable.
+    /// endpoint groups. Registering handlers through this method alone does not make its endpoint groups discoverable,
+    /// and does not hand its assemblies to <see cref="OnMediatorAssemblies"/>: <c>AddMediatorValidation()</c> does not
+    /// look for validators in them.
     /// </para>
     /// </summary>
     /// <exception cref="InvalidOperationException">Two handlers in the scanned assemblies handle the same request type.</exception>
@@ -234,6 +241,32 @@ public static class ServiceCollectionExtensions
                 }
             }
         }
+
+        return services;
+    }
+
+    /// <summary>
+    /// Calls <paramref name="register"/> with the assemblies given to <c>AddMediator(...)</c>: at once with those given so
+    /// far, then with the new ones from every later <c>AddMediator(...)</c> call. A companion package registers its own
+    /// types from the same assemblies this way — <c>AddMediatorValidation()</c> registers validators with it — so an app
+    /// names its assemblies once, in <c>AddMediator</c>. Registering the same callback again has no effect.
+    /// <para>
+    /// Assemblies given only to <see cref="AddMediatorHandlers"/> are not included.
+    /// </para>
+    /// </summary>
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    public static IServiceCollection OnMediatorAssemblies(this IServiceCollection services, Action<IServiceCollection, IReadOnlyList<Assembly>> register)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(register);
+
+        var registry = services.GetOrCreateAssemblyRegistry();
+        if (!registry.Subscribe(register))
+            return services;
+
+        var assemblies = registry.GetAssemblies();
+        if (assemblies.Length > 0)
+            register(services, assemblies);
 
         return services;
     }

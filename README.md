@@ -67,7 +67,7 @@ var assembly = Assembly.GetExecutingAssembly();
 builder.Services
     .AddMediator(assembly)        // core: ISender + request handlers
     .AddMediatorSentry()          // optional: Phoenix.Mediator.Sentry
-    .AddMediatorValidation(assembly); // optional: Phoenix.Mediator.Validation
+    .AddMediatorValidation();     // optional: Phoenix.Mediator.Validation (validators from the same assemblies)
 ```
 
 Empty `IRequest` responses default to `204 No Content`. Configure `200 OK` during registration when that better matches your API contract:
@@ -85,8 +85,9 @@ builder.Services.AddMediator(options =>
 - the `/health` endpoint support
 
 Pipeline behaviors are **opt-in** and run in registration order (first registered = outermost).
-`AddMediatorSentry()` before `AddMediatorValidation(...)` makes the Sentry span wrap validation.
-`AddMediatorValidation(assemblies...)` also registers FluentValidation validators from those assemblies.
+`AddMediatorSentry()` before `AddMediatorValidation()` makes the Sentry span wrap validation.
+`AddMediatorValidation()` also registers the FluentValidation validators in the assemblies given to `AddMediator`; pass
+it more assemblies only for validators that live elsewhere.
 For your own behaviors, see [Pipeline behaviors](#pipeline-behaviors).
 
 ### 2. Create a request + handler
@@ -473,8 +474,10 @@ Notes:
 
 ## Validation
 
-Install `Phoenix.Mediator.Validation` and call `AddMediatorValidation(assemblies...)` — it registers the
-validation pipeline behavior and all FluentValidation validators in those assemblies.
+Install `Phoenix.Mediator.Validation` and call `AddMediatorValidation()` — it registers the validation pipeline
+behavior and the FluentValidation validators in the assemblies given to `AddMediator(...)`, whichever of the two is
+called first. A validator kept in another assembly needs that assembly passed:
+`AddMediatorValidation(typeof(SomeValidator).Assembly)`.
 Validation failures are returned as `400` with the `errors` response body (see
 [Response and error behavior](#response-and-error-behavior)).
 
@@ -490,8 +493,8 @@ Each case that causes it is logged as a warning once at host startup:
 
 | Warning | Cause |
 | --- | --- |
-| `AddMediatorValidation() was called without assemblies` | The behavior is registered but nothing is scanned. Intentional only if you register your `IValidator<T>` implementations yourself — the warning is suppressed when you have. |
-| `found no FluentValidation validators in the scanned assemblies` | The assemblies you passed hold no validators. Validators often live in a different assembly from the handlers. |
+| `AddMediatorValidation() found no assemblies to scan` | No assembly was given to `AddMediator(...)` or `AddMediatorValidation(...)`, so nothing is scanned. Intentional only if you register your `IValidator<T>` implementations yourself — the warning is suppressed when you have. |
+| `found no FluentValidation validators in the scanned assemblies` | The scanned assemblies hold no validators. If yours live in another assembly, pass it to `AddMediatorValidation(...)`. |
 | `still has unbound type parameters` | The validator is generic, or is nested inside a generic type and inherits its type parameters. The scan skips it. Move it out of the generic type, or register a closed version explicitly. |
 | `has no public constructor` | The validator is registered but the container cannot construct it, so the first request that uses it throws `A suitable constructor ... could not be located`. |
 
@@ -623,6 +626,12 @@ Notes:
   it was silently ignored — EF Core, for one, logged every SQL command at `Information` even where the section said
   `Warning`. Levels now follow the section, so a level set there and never noticed (`"Default": "Debug"`, say) takes
   effect.
+- **`AddMediatorValidation()` scans the assemblies given to `AddMediator(...)`**, so
+  `AddMediator(assembly).AddMediatorValidation()` is enough. Assemblies passed to `AddMediatorValidation(...)` are
+  scanned as well, and an assembly given to both is scanned once, so existing calls keep working unchanged. Before,
+  `AddMediatorValidation()` with no assemblies registered no validators: an app that relied on that and registers its
+  validators by hand now also gets the ones in its `AddMediator` assemblies (FluentValidation skips any already
+  registered).
 
 ### 2.3.0
 

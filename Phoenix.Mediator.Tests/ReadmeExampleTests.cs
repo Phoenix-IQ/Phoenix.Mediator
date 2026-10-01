@@ -69,7 +69,7 @@ public sealed class ReadmeExampleTests
         services
             .AddMediator(assembly)            // core: ISender + request handlers
             .AddMediatorSentry()              // optional: Phoenix.Mediator.Sentry
-            .AddMediatorValidation(assembly); // optional: Phoenix.Mediator.Validation
+            .AddMediatorValidation();         // optional: Phoenix.Mediator.Validation (validators from the same assemblies)
 
         await using var provider = services.BuildServiceProvider(validateScopes: true);
         using var scope = provider.CreateScope();
@@ -83,14 +83,14 @@ public sealed class ReadmeExampleTests
     }
 
     // "Pipeline behaviors ... run in registration order (first registered = outermost). AddMediatorSentry()
-    // before AddMediatorValidation(...) makes the Sentry span wrap validation."
+    // before AddMediatorValidation() makes the Sentry span wrap validation."
     [Fact]
     public void AddMediatorSentryBeforeValidation_PutsTheSentryBehaviorOutsideValidation()
     {
         var assembly = ReadmeGreetingAssembly();
         var services = new ServiceCollection();
 
-        services.AddMediator(assembly).AddMediatorSentry().AddMediatorValidation(assembly);
+        services.AddMediator(assembly).AddMediatorSentry().AddMediatorValidation();
 
         using var provider = services.BuildServiceProvider(validateScopes: true);
         using var scope = provider.CreateScope();
@@ -108,7 +108,7 @@ public sealed class ReadmeExampleTests
         var assembly = ReadmeGreetingAssembly();
         var services = new ServiceCollection();
 
-        services.AddMediator(assembly).AddMediatorValidation(assembly).AddMediatorSentry();
+        services.AddMediator(assembly).AddMediatorValidation().AddMediatorSentry();
 
         using var provider = services.BuildServiceProvider(validateScopes: true);
         using var scope = provider.CreateScope();
@@ -268,9 +268,26 @@ public sealed class ReadmeExampleTests
         Assert.NotNull(provider.GetService<HealthCheckService>());
     }
 
-    // "AddMediatorValidation(assemblies...) also registers FluentValidation validators from those assemblies."
+    // "AddMediatorValidation() also registers the FluentValidation validators in those assemblies ..."
     [Fact]
-    public void AddMediatorValidation_RegistersValidatorsFromTheProvidedAssemblies()
+    public void AddMediatorValidation_RegistersTheValidatorsInTheAssembliesGivenToAddMediator()
+    {
+        var services = new ServiceCollection();
+
+        services
+            .AddMediator(new FakeAssembly("Readme.App", typeof(ReadmeHost<object>.ReadmeCreateStudentCommandValidator)))
+            .AddMediatorValidation();
+
+        using var provider = services.BuildServiceProvider(validateScopes: true);
+        using var scope = provider.CreateScope();
+
+        Assert.IsType<ReadmeHost<object>.ReadmeCreateStudentCommandValidator>(
+            Assert.Single(scope.ServiceProvider.GetServices<IValidator<ReadmeCreateStudentCommand>>()));
+    }
+
+    // "... pass it more assemblies only for validators that live elsewhere."
+    [Fact]
+    public void AddMediatorValidation_RegistersValidatorsFromTheAssembliesPassedToIt()
     {
         var services = new ServiceCollection();
 
@@ -1836,9 +1853,10 @@ public sealed class ReadmeExampleTests
     public async Task ValidationBehaviorWithoutValidators_AcceptsInvalidInput()
     {
         var services = new ServiceCollection();
-        // No assemblies: the behavior is registered, nothing is scanned, so no IValidator<T> exists for this
-        // request and the pipeline has nothing to fail on.
-        services.AddMediator(typeof(ReadmeExampleTests).Assembly).AddMediatorValidation();
+        // No assembly is given to AddMediator or AddMediatorValidation and the handler is registered by hand, so nothing
+        // is scanned: no IValidator<T> exists for this request and the pipeline has nothing to fail on.
+        services.AddMediator().AddMediatorValidation();
+        services.AddTransient<IRequestHandler<ReadmeCreateStudentCommand, SingleResponse<string>>, ReadmeCreateStudentCommandHandler>();
 
         await using var provider = services.BuildServiceProvider(validateScopes: true);
         using var scope = provider.CreateScope();

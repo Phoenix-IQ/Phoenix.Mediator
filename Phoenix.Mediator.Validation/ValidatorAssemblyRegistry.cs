@@ -5,8 +5,8 @@ using System.Reflection;
 namespace Phoenix.Mediator.Validation;
 
 /// <summary>
-/// Remembers which assemblies have already been handed to FluentValidation's scan, so repeated
-/// <c>AddMediatorValidation(...)</c> calls don't register the same validators twice.
+/// Remembers which assemblies FluentValidation's scan has already seen, so an assembly that reaches it more than once —
+/// given to both <c>AddMediator(...)</c> and <c>AddMediatorValidation(...)</c>, or to either twice — is scanned once.
 /// </summary>
 internal sealed class ValidatorAssemblyRegistry(IServiceCollection services)
 {

@@ -925,17 +925,18 @@ public sealed class DiRegistrationTests
         Assert.Single(services, static descriptor => descriptor.ServiceType == typeof(IHostedService));
     }
 
-    // FluentValidation's scan uses Add, not TryAdd, so without the assembly registry a second
-    // AddMediatorValidation(assembly) would run every validator twice and double every error message.
+    // The assembly registry stops a second AddMediatorValidation(assembly) from scanning it again. FluentValidation 12
+    // skips validators it has already registered, so the registry saves the scan rather than a duplicate validator.
     [Fact]
     public void AddMediatorValidation_DoesNotRescanTheSameAssembly()
     {
-        var assembly = new FakeAssembly(typeof(DiNameValidator));
+        var assembly = new DiCountingAssembly(typeof(DiNameValidator));
         var services = new ServiceCollection();
 
         services.AddMediatorValidation(assembly);
         services.AddMediatorValidation(assembly);
 
+        Assert.Equal(1, assembly.GetTypesCallCount);
         Assert.Single(services, static descriptor => descriptor.ServiceType == typeof(IValidator<DiValidatedRequest>));
     }
 
@@ -1381,6 +1382,130 @@ public sealed class DiRegistrationTests
         Assert.Equal("ok", await sender.Send<DiValidatedRequest, string>(new DiValidatedRequest { Name = "ok" }));
     }
 
+    // ------------------------------------------------------------------
+    // AddMediatorValidation takes its assemblies from AddMediator
+    // ------------------------------------------------------------------
+
+    // The app names its assemblies once, in AddMediator; validators usually sit next to their handlers.
+    [Fact]
+    public async Task AddMediatorValidation_WithoutAssemblies_RunsTheValidatorsInTheAssembliesGivenToAddMediator()
+    {
+        var assembly = new FakeAssembly(typeof(DiValidatedRequestHandler), typeof(DiNameValidator));
+        await using var provider = BuildProvider(services => services.AddMediator(assembly).AddMediatorValidation());
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+
+        var exception = await Assert.ThrowsAsync<HttpResponseException>(
+            () => sender.Send<DiValidatedRequest, string>(new DiValidatedRequest()));
+
+        Assert.Equal(HttpStatusCode.BadRequest, exception.HttpStatusCode);
+    }
+
+    // Composing a container from modules makes the order accidental: the assemblies AddMediator gets afterwards count too.
+    [Fact]
+    public async Task AddMediatorValidation_BeforeAddMediator_RunsTheValidatorsInItsAssemblies()
+    {
+        await using var provider = BuildProvider(static services =>
+        {
+            services.AddMediatorValidation();
+            services.AddMediator(new FakeAssembly(typeof(DiValidatedRequestHandler), typeof(DiNameValidator)));
+        });
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+
+        var exception = await Assert.ThrowsAsync<HttpResponseException>(
+            () => sender.Send<DiValidatedRequest, string>(new DiValidatedRequest()));
+
+        Assert.Equal(HttpStatusCode.BadRequest, exception.HttpStatusCode);
+    }
+
+    // A later AddMediator call — another module adding its assembly — brings its validators along.
+    [Fact]
+    public void AddMediatorValidation_RegistersTheValidatorsOfALaterAddMediatorCall()
+    {
+        var services = new ServiceCollection();
+
+        services.AddMediator(new FakeAssembly("first", typeof(DiValidatedRequestHandler))).AddMediatorValidation();
+        services.AddMediator(new FakeAssembly("second", typeof(DiNameValidator)));
+
+        var descriptor = Assert.Single(services, static d => d.ServiceType == typeof(IValidator<DiValidatedRequest>));
+        Assert.Equal(typeof(DiNameValidator), descriptor.ImplementationType);
+    }
+
+    // Assemblies passed to AddMediatorValidation are for validators kept outside the handlers' assemblies: scanned in
+    // addition to AddMediator's, not instead of them.
+    [Fact]
+    public void AddMediatorValidation_WithAssemblies_ScansThemAsWellAsTheOnesGivenToAddMediator()
+    {
+        var services = new ServiceCollection();
+
+        services
+            .AddMediator(new FakeAssembly("handlers", typeof(DiValidatedRequestHandler), typeof(DiNameValidator)))
+            .AddMediatorValidation(new FakeAssembly("validators", typeof(DiHost<object>.NameLengthValidator)));
+
+        Assert.Equal(
+            new[] { typeof(DiNameValidator), typeof(DiHost<object>.NameLengthValidator) },
+            services.Where(static d => d.ServiceType == typeof(IValidator<DiValidatedRequest>)).Select(static d => d.ImplementationType));
+    }
+
+    // Every app that passed the same assemblies to both calls keeps working, and each assembly is still scanned for
+    // validators only once: one GetTypes for the handler scan, one for the validator scan.
+    [Fact]
+    public void AddMediatorValidation_ScansAnAssemblyGivenToBothCallsOnce()
+    {
+        var assembly = new DiCountingAssembly(typeof(DiValidatedRequestHandler), typeof(DiNameValidator));
+        var services = new ServiceCollection();
+
+        services.AddMediator(assembly).AddMediatorValidation(assembly);
+
+        Assert.Equal(2, assembly.GetTypesCallCount);
+        Assert.Single(services, static d => d.ServiceType == typeof(IValidator<DiValidatedRequest>));
+    }
+
+    // OnMediatorAssemblies is how a companion package learns AddMediator's assemblies: those given so far, then each new one.
+    [Fact]
+    public void OnMediatorAssemblies_SeesTheAssembliesGivenBeforeAndAfterSubscribing()
+    {
+        var first = new FakeAssembly("first", typeof(DiPingHandler));
+        var second = new FakeAssembly("second", typeof(DiRecordHandler));
+        var seen = new List<Assembly>();
+        var services = new ServiceCollection();
+
+        services.AddMediator(first);
+        services.OnMediatorAssemblies((_, assemblies) => seen.AddRange(assemblies));
+        services.AddMediator(second);
+        services.AddMediator(first);
+
+        Assert.Equal(new Assembly[] { first, second }, seen);
+    }
+
+    [Fact]
+    public void OnMediatorAssemblies_TheSameCallbackTwice_IsCalledOncePerAssembly()
+    {
+        var calls = 0;
+        Action<IServiceCollection, IReadOnlyList<Assembly>> callback = (_, assemblies) => calls += assemblies.Count;
+        var services = new ServiceCollection();
+
+        services.OnMediatorAssemblies(callback);
+        services.OnMediatorAssemblies(callback);
+        services.AddMediator(new FakeAssembly(typeof(DiPingHandler)));
+
+        Assert.Equal(1, calls);
+    }
+
+    // AddMediatorHandlers is the scan-only call: as with endpoint discovery, its assemblies are not handed on.
+    [Fact]
+    public void OnMediatorAssemblies_IsNotCalledForAssembliesGivenOnlyToAddMediatorHandlers()
+    {
+        var calls = 0;
+        var services = new ServiceCollection();
+
+        services.OnMediatorAssemblies((_, _) => calls++);
+        services.AddMediatorHandlers(new FakeAssembly(typeof(DiPingHandler)));
+
+        Assert.Equal(0, calls);
+    }
+
     [Fact]
     public async Task AddMediatorSentry_BeforeAddMediator_StillProducesAWorkingPipeline()
     {
@@ -1572,6 +1697,12 @@ public static class DiHost<TMarker>
     public sealed class SecondDuplicateHandler : IRequestHandler<DiDuplicateRequest, string>
     {
         public Task<string> Handle(DiDuplicateRequest request, CancellationToken cancellationToken) => Task.FromResult("second");
+    }
+
+    /// <summary>A second validator for <see cref="DiValidatedRequest"/>, kept here so no assembly-wide scan picks it up.</summary>
+    public sealed class NameLengthValidator : AbstractValidator<DiValidatedRequest>
+    {
+        public NameLengthValidator() => RuleFor(static request => request.Name).MaximumLength(50);
     }
 
     public abstract class AbstractHandler : IRequestHandler<DiAbstractRequest, string>

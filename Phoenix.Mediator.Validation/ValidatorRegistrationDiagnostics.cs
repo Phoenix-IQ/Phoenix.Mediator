@@ -33,7 +33,7 @@ internal sealed class ValidatorRegistrationDiagnostics(ValidatorAssemblyRegistry
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
-    /// <param name="assemblies">The assemblies handed to <c>AddMediatorValidation(...)</c>.</param>
+    /// <param name="assemblies">The assemblies scanned for validators: those given to <c>AddMediator(...)</c> and to <c>AddMediatorValidation(...)</c>.</param>
     /// <param name="hasValidatorsRegisteredOutsideScan">
     /// Called only when the scan found nothing, to tell "the app registered its validators by hand"
     /// apart from "nothing is validated at all".
@@ -87,12 +87,12 @@ internal sealed class ValidatorRegistrationDiagnostics(ValidatorAssemblyRegistry
         if (registered.Count == 0 && !hasValidatorsRegisteredOutsideScan())
         {
             warnings.Add(assemblies.Count == 0
-                ? "AddMediatorValidation() was called without assemblies, so it registered the pipeline behavior and no validators. " +
-                  "Every request passes validation. Pass the assemblies holding your IValidator<T> implementations, " +
-                  "e.g. AddMediatorValidation(typeof(SomeValidator).Assembly)."
-                : $"AddMediatorValidation(...) found no FluentValidation validators in the scanned assemblies ({string.Join(", ", assemblies.Select(static a => a.GetName().Name))}). " +
-                  "Every request passes validation. Pass the assemblies holding your IValidator<T> implementations — they are often not the " +
-                  "same assemblies as your handlers.");
+                ? "AddMediatorValidation() found no assemblies to scan: none were given to AddMediator(...) or AddMediatorValidation(...), " +
+                  "so it registered the pipeline behavior and no validators. Every request passes validation. Pass your assemblies to " +
+                  "AddMediator(...), or the ones holding your IValidator<T> implementations to AddMediatorValidation(...)."
+                : $"AddMediatorValidation() found no FluentValidation validators in the scanned assemblies ({string.Join(", ", assemblies.Select(static a => a.GetName().Name))}). " +
+                  "Every request passes validation. If your IValidator<T> implementations live in another assembly, pass it to " +
+                  "AddMediatorValidation(...).");
         }
 
         return warnings;

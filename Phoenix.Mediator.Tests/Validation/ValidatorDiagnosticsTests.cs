@@ -20,14 +20,24 @@ namespace Phoenix.Mediator.Tests;
 /// </summary>
 public sealed class ValidatorDiagnosticsTests
 {
+    // Neither AddMediator nor AddMediatorValidation got an assembly, so nothing can be scanned for validators.
     [Fact]
-    public async Task WarnsWhenCalledWithoutAssemblies()
+    public async Task WarnsWhenNoAssemblyIsGivenAnywhere()
     {
-        var warnings = await WarningsFor(services => services
-            .AddMediator(typeof(ValidatorDiagnosticsTests).Assembly)
-            .AddMediatorValidation());
+        var warnings = await WarningsFor(static services => services.AddMediator().AddMediatorValidation());
 
-        Assert.Contains(warnings, warning => warning.Contains("without assemblies", StringComparison.Ordinal));
+        Assert.Contains(warnings, warning => warning.Contains("no assemblies to scan", StringComparison.Ordinal));
+    }
+
+    // AddMediatorValidation() scans the assemblies given to AddMediator, so validators found there count.
+    [Fact]
+    public async Task DoesNotWarnWhenTheValidatorsAreInAnAssemblyGivenToAddMediator()
+    {
+        var assembly = new FakeAssembly("App", typeof(DiagnosticsRequest), typeof(DiagnosticsHandler), typeof(DiagnosticsValidator));
+
+        var warnings = await WarningsFor(services => services.AddMediator(assembly).AddMediatorValidation());
+
+        Assert.DoesNotContain(warnings, warning => warning.Contains("passes validation", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -41,14 +51,14 @@ public sealed class ValidatorDiagnosticsTests
         Assert.Contains("HandlersOnly", warning, StringComparison.Ordinal);
     }
 
-    // AddMediatorValidation() with no assemblies is a supported way to use the behavior with hand-registered
-    // validators, so it must not be reported as "nothing is validated".
+    // No assemblies anywhere is a supported way to use the behavior with hand-registered validators, so it must not
+    // be reported as "nothing is validated".
     [Fact]
     public async Task DoesNotWarnWhenValidatorsAreRegisteredByHand()
     {
         var warnings = await WarningsFor(services =>
         {
-            services.AddMediator(typeof(ValidatorDiagnosticsTests).Assembly).AddMediatorValidation();
+            services.AddMediator().AddMediatorValidation();
             services.AddScoped<IValidator<DiagnosticsRequest>, DiagnosticsValidator>();
         });
 
@@ -95,14 +105,14 @@ public sealed class ValidatorDiagnosticsTests
     [Fact]
     public async Task ReportsOnceWhenRegisteredRepeatedly()
     {
-        var warnings = await WarningsFor(services =>
+        var warnings = await WarningsFor(static services =>
         {
-            services.AddMediator(typeof(ValidatorDiagnosticsTests).Assembly);
+            services.AddMediator();
             services.AddMediatorValidation();
             services.AddMediatorValidation();
         });
 
-        Assert.Single(warnings, warning => warning.Contains("without assemblies", StringComparison.Ordinal));
+        Assert.Single(warnings, warning => warning.Contains("no assemblies to scan", StringComparison.Ordinal));
     }
 
     private static async Task<IReadOnlyList<string>> WarningsFor(Action<IServiceCollection> configure)
