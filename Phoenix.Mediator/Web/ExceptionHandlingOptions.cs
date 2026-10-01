@@ -84,7 +84,7 @@ public sealed class ExceptionHandlingOptions
 
     /// <summary>
     /// Full control: <paramref name="map"/> returns the error response to write for a <typeparamref name="TException"/>,
-    /// messages and field errors included — or <see langword="null"/> to decline, which leaves the exception to the mapping
+    /// status and messages — or <see langword="null"/> to decline, which leaves the exception to the mapping
     /// for its base type, or to the default handling. Use it to map only some exceptions of a type, such as a database
     /// exception that reports a unique-key violation.
     /// </summary>

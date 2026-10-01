@@ -22,7 +22,7 @@ namespace Phoenix.Mediator.Tests;
 
 /// <summary>
 /// <see cref="ExceptionHandlingOptions"/>: the app's own exception-to-status mappings, the switch for the common-exception
-/// mappings, the per-field errors in the body, and the 401/403/409 exception types. Types are prefixed <c>Em</c>.
+/// mappings, and the 401/403/409 exception types. Types are prefixed <c>Em</c>.
 /// </summary>
 public sealed class ExceptionMappingTests
 {
@@ -71,19 +71,15 @@ public sealed class ExceptionMappingTests
     }
 
     [Fact]
-    public async Task Map_WithFullControl_WritesTheResponseItReturns_FieldErrorsIncluded()
+    public async Task Map_WithFullControl_WritesTheResponseItReturns()
     {
         var options = new ExceptionHandlingOptions().Map<EmDuplicateKeyException>(exception =>
-            new ErrorResponse(HttpStatusCode.Conflict, [$"{exception.Field} is taken."])
-            {
-                FieldErrors = new Dictionary<string, string[]> { [exception.Field] = ["Already taken."] }
-            });
+            new ErrorResponse(HttpStatusCode.Conflict, [$"{exception.Field} is taken."]));
 
         var context = await RunAsync(new EmDuplicateKeyException("email"), options);
 
         Assert.Equal(StatusCodes.Status409Conflict, context.Response.StatusCode);
         Assert.Equal(new[] { "email is taken." }, Errors(context));
-        Assert.Equal("Already taken.", Json(context).GetProperty("fieldErrors").GetProperty("email")[0].GetString());
     }
 
     [Fact]
@@ -311,23 +307,8 @@ public sealed class ExceptionMappingTests
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Field errors and the new exception types.
+    // The new exception types.
     // ---------------------------------------------------------------------------------------------
-
-    [Fact]
-    public async Task HttpResponseExceptionWithFieldErrors_WritesThemNextToTheFlatList()
-    {
-        var exception = new HttpResponseException(new ErrorResponse(HttpStatusCode.BadRequest, ["Name is required.", "Email is invalid."])
-        {
-            FieldErrors = new Dictionary<string, string[]> { ["name"] = ["Name is required."], ["email"] = ["Email is invalid."] }
-        });
-
-        var root = Json(await RunAsync(exception, new ExceptionHandlingOptions()));
-
-        Assert.Equal(new[] { "errors", "fieldErrors", "traceId" }, root.EnumerateObject().Select(static p => p.Name).Order(StringComparer.Ordinal));
-        Assert.Equal("Email is invalid.", root.GetProperty("fieldErrors").GetProperty("email")[0].GetString());
-        Assert.Equal(2, root.GetProperty("errors").GetArrayLength());
-    }
 
     [Theory]
     [InlineData("unauthorized", 401)]
@@ -348,21 +329,6 @@ public sealed class ExceptionMappingTests
         Assert.Equal("em-message", exception.Message);
         Assert.Equal(expectedStatusCode, context.Response.StatusCode);
         Assert.Equal(new[] { "em-message" }, Errors(context));
-    }
-
-    // A handler returning an ErrorResponse instead of throwing gets the same body, field errors included.
-    [Fact]
-    public async Task ToApiResult_OnAnErrorResponseWithFieldErrors_WritesThemToo()
-    {
-        var response = new ErrorResponse(HttpStatusCode.BadRequest, ["Name is required."])
-        {
-            FieldErrors = new Dictionary<string, string[]> { ["name"] = ["Name is required."] }
-        };
-
-        var executed = await ResultExecution.ExecuteAsync(response.ToApiResult());
-
-        Assert.Equal(StatusCodes.Status400BadRequest, executed.StatusCode);
-        Assert.Equal("Name is required.", executed.Json.GetProperty("fieldErrors").GetProperty("name")[0].GetString());
     }
 
     // ---------------------------------------------------------------------------------------------

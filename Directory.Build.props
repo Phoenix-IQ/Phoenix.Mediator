@@ -35,7 +35,7 @@
          changed member, or a new abstract member. Intentional breaks need a major version, and a suppression file.
          Move the baseline to each new release after publishing it. -->
     <EnablePackageValidation>true</EnablePackageValidation>
-    <PackageValidationBaselineVersion>2.2.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>2.3.0</PackageValidationBaselineVersion>
   </PropertyGroup>
 
   <ItemGroup Condition="!$(MSBuildProjectName.EndsWith('.Tests'))">

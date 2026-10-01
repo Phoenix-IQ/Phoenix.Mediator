@@ -284,17 +284,6 @@ Error body shape (the `traceId` correlates the response with your logs/Sentry):
 }
 ```
 
-Validation failures also put each message under the field it is about, keyed by the path the client wrote, so a form
-can show it next to that field. Every other error leaves `fieldErrors` out.
-
-```json
-{
-  "errors": ["'Email' is not a valid email address."],
-  "fieldErrors": { "email": ["'Email' is not a valid email address."] },
-  "traceId": "0af7651916cd43dd8448eb211c80319c"
-}
-```
-
 ### Mapping your own exceptions
 
 An exception the middleware doesn't recognize becomes a `500`. Map the ones that mean something else:
@@ -308,7 +297,7 @@ builder.Services.Configure<ExceptionHandlingOptions>(options => options
 - `Map<T>(status)` answers with the generic unknown-error message, localized like the others; `Map<T>(status, message)`
   answers with your message. The exception's own message is never sent: it can hold SQL, connection strings or file
   paths.
-- `Map<T>(exception => new ErrorResponse(...))` builds the whole response, field errors included. Return `null` to
+- `Map<T>(exception => new ErrorResponse(...))` builds the whole response, status and messages. Return `null` to
   leave the exception to the mapping for its base type — to map only the database errors that are a unique-key
   violation, for instance.
 - A mapping also covers exceptions derived from its type, and the most specific mapping wins.
@@ -486,8 +475,8 @@ Notes:
 
 Install `Phoenix.Mediator.Validation` and call `AddMediatorValidation(assemblies...)` — it registers the
 validation pipeline behavior and all FluentValidation validators in those assemblies.
-Validation failures are returned as `400` with the `errors` response body, and the same messages per field in
-`fieldErrors` (see [Response and error behavior](#response-and-error-behavior)).
+Validation failures are returned as `400` with the `errors` response body (see
+[Response and error behavior](#response-and-error-behavior)).
 
 A handler that validates on its own, with `await validator.ValidateAndThrowAsync(command)`, gets the same `400`:
 `AddMediatorValidation` maps FluentValidation's `ValidationException`, which would otherwise be a `500`.
@@ -626,6 +615,10 @@ Notes:
 
 ### 2.3.1
 
+- **`fieldErrors` is removed** — a breaking change, made in a patch while 2.3.0 is new. Validation failures return the
+  `errors` + `traceId` body again, as in 2.2.0. Code that set or read `ErrorResponse.FieldErrors`,
+  `ErrorsResponse.FieldErrors` or `HttpResponseException.FieldErrors` no longer compiles: use `Errors`, which always
+  held the same messages.
 - **`AddLogging()` applies the `Logging:LogLevel` section** (see [Log levels](#log-levels)). `UseSerilog` bypassed it, so
   it was silently ignored — EF Core, for one, logged every SQL command at `Information` even where the section said
   `Warning`. Levels now follow the section, so a level set there and never noticed (`"Default": "Debug"`, say) takes
@@ -648,7 +641,7 @@ Most apps upgrade without code changes; the bullets below that can need one say 
 - **A request sent through a base class reaches its runtime type's handler** when the base class has no handler of
   its own; it used to fail. A missing handler is still an `InvalidOperationException`, with a clearer message.
 - **A FluentValidation `ValidationException` thrown by a handler is a `400`**, not a `500`, when `AddMediatorValidation`
-  is used. Validation failures carry `fieldErrors`; every other error body is unchanged.
+  is used. Validation failures carry `fieldErrors` (removed again in 2.3.1); every other error body is unchanged.
 - **New `UnauthorizedException`, `ForbiddenException` and `ConflictException`.** A project that defines its own types
   with those names and imports `Phoenix.Mediator.Exceptions` gets an ambiguous-name error: delete its own if they only
   set the status, or qualify the name.

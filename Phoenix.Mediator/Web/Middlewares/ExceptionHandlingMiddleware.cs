@@ -129,7 +129,7 @@ public sealed class ExceptionHandlingMiddleware
         if (!TryResetResponse(context, exception))
             return;
 
-        await WriteErrorsAsync(context, statusCode, exception.Errors, exception.FieldErrors);
+        await WriteErrorsAsync(context, statusCode, exception.Errors);
     }
 
     /// <summary>
@@ -148,7 +148,7 @@ public sealed class ExceptionHandlingMiddleware
             if (!TryResetResponse(context, exception))
                 return;
 
-            await WriteErrorsAsync(context, statusCode, errors, mapped.FieldErrors);
+            await WriteErrorsAsync(context, statusCode, errors);
             return;
         }
 
@@ -255,13 +255,13 @@ public sealed class ExceptionHandlingMiddleware
     /// type once per arm, next to a fourth copy in the endpoint helpers' <c>Produces&lt;ErrorsResponse&gt;</c>
     /// metadata, which is the sort of drift a client only finds in production.
     /// </summary>
-    private async Task WriteErrorsAsync(HttpContext context, int statusCode, IReadOnlyList<string> errors, IReadOnlyDictionary<string, string[]>? fieldErrors = null)
+    private async Task WriteErrorsAsync(HttpContext context, int statusCode, IReadOnlyList<string> errors)
     {
         context.Response.ContentType = "application/json";
         context.Response.StatusCode = statusCode;
 
         await context.Response.WriteAsync(
-            JsonSerializer.Serialize(new ErrorsResponse(errors, GetTraceId(context)) { FieldErrors = fieldErrors }, ErrorBodyJsonOptions));
+            JsonSerializer.Serialize(new ErrorsResponse(errors, GetTraceId(context)), ErrorBodyJsonOptions));
     }
 
     // The anonymous types this replaced spelled their members in camelCase literally. ErrorsResponse names

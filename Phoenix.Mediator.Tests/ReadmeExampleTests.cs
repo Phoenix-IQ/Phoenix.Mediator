@@ -1061,10 +1061,10 @@ public sealed class ReadmeExampleTests
         Assert.Equal(HttpStatusCode.Conflict, new ConflictException("readme").HttpStatusCode);
     }
 
-    // The README's fieldErrors JSON sample: produced here by a handler validating on its own with
-    // ValidateAndThrowAsync, which the Validation section says gets the same 400.
+    // README "Validation": a handler validating on its own with ValidateAndThrowAsync gets the same 400, in the error
+    // body shape "Response and error behavior" shows, nothing added.
     [Fact]
-    public async Task ErrorBody_ForAValidationFailure_MatchesTheReadmeSample()
+    public async Task ErrorBody_ForAValidationFailure_HasTheReadmeShape()
     {
         await using var app = await StartErrorReadmeAppAsync(static services =>
             services.AddTransient<IRequestHandler<ReadmeSubscribeCommand, SingleResponse<string>>, ReadmeHost<object>.ReadmeSubscribeCommandHandler>());
@@ -1074,9 +1074,8 @@ public sealed class ReadmeExampleTests
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var body = JsonBody(await response.Content.ReadAsStringAsync());
-        Assert.Equal(new[] { "errors", "fieldErrors", "traceId" }, body.EnumerateObject().Select(static member => member.Name).Order(StringComparer.Ordinal));
+        Assert.Equal(new[] { "errors", "traceId" }, body.EnumerateObject().Select(static member => member.Name).Order(StringComparer.Ordinal));
         Assert.Equal("'Email' is not a valid email address.", body.GetProperty("errors")[0].GetString());
-        Assert.Equal("'Email' is not a valid email address.", body.GetProperty("fieldErrors").GetProperty("email")[0].GetString());
     }
 
     // "### Mapping your own exceptions", the snippet verbatim apart from its two exception types, which come from EF Core
@@ -2712,7 +2711,7 @@ public enum ReadmeFlagsRole
     Manager = 2
 }
 
-/// <summary>README "Response and error behavior": the request the fieldErrors sample is about.</summary>
+/// <summary>README "Validation": the request a handler validates on its own, with ValidateAndThrowAsync.</summary>
 public sealed class ReadmeSubscribeCommand : IRequest<SingleResponse<string>>
 {
     public string Email { get; set; } = string.Empty;

@@ -32,10 +32,8 @@ public static class AutoResponseMappingExtensions
         {
             null => CreateEmptyResponseResult(emptyResponseStatusCode),
             IResult result => result,
-            // Same body shape as the exception-handling middleware, trace id and field errors included.
-            ErrorResponse errors => Results.Json(
-                new ErrorsResponse(errors.Errors, Activity.Current?.TraceId.ToString()) { FieldErrors = errors.FieldErrors },
-                statusCode: (int)errors.HttpStatusCode),
+            // Same body shape as the exception-handling middleware, trace id included.
+            ErrorResponse errors => Results.Json(new ErrorsResponse(errors.Errors, Activity.Current?.TraceId.ToString()), statusCode: (int)errors.HttpStatusCode),
             // Always return JSON so Swagger/clients consistently get the documented content-type/schema.
             _ => Results.Json(value)
         };
