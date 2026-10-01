@@ -551,7 +551,7 @@ public sealed class ExceptionHandlingMiddlewareTests
     }
 
     // ---------------------------------------------------------------------------------------------
-    // UnauthorizedAccessException.
+    // UnauthorizedAccessException, with MapCommonExceptions on. Off (the default), it is an unhandled 500.
     // ---------------------------------------------------------------------------------------------
 
     // The source only sets the status: a 401 with no body lets the authentication middleware's own
@@ -559,7 +559,9 @@ public sealed class ExceptionHandlingMiddlewareTests
     [Fact]
     public async Task InvokeAsync_UnauthorizedAccessException_Writes401WithNoBody()
     {
-        var context = await ExRunAsync(new UnauthorizedAccessException("Access to the path 'x' is denied."));
+        var context = await ExRunAsync(
+            new UnauthorizedAccessException("Access to the path 'x' is denied."),
+            options: new ExceptionHandlingOptions { MapCommonExceptions = true });
 
         Assert.Equal(StatusCodes.Status401Unauthorized, context.Response.StatusCode);
         Assert.Empty(ExBody(context));
@@ -576,7 +578,7 @@ public sealed class ExceptionHandlingMiddlewareTests
         var recorder = new RecordingLoggerProvider();
         var exception = new UnauthorizedAccessException("Access to the path 'x' is denied.");
 
-        await ExRunAsync(exception, logger: ExLogger(recorder));
+        await ExRunAsync(exception, logger: ExLogger(recorder), options: new ExceptionHandlingOptions { MapCommonExceptions = true });
 
         var warning = Assert.Single(recorder.Warnings);
         Assert.Equal(LogLevel.Warning, warning.Level);
@@ -588,8 +590,8 @@ public sealed class ExceptionHandlingMiddlewareTests
     // Unhandled exceptions.
     // ---------------------------------------------------------------------------------------------
 
-    // The status mapping is the only thing standing between a repository's KeyNotFoundException and a
-    // 500 for what is really a missing row.
+    // With MapCommonExceptions on, the statuses of versions before 3.0: a repository's KeyNotFoundException is a 404,
+    // for what is really a missing row. Everything else stays a 500.
     [Theory]
     [InlineData("key-not-found", 404)]
     [InlineData("argument", 400)]
@@ -600,7 +602,7 @@ public sealed class ExceptionHandlingMiddlewareTests
     [InlineData("plain", 500)]
     public async Task InvokeAsync_UnhandledException_MapsTheExceptionTypeToAStatusCode(string exceptionKind, int expectedStatusCode)
     {
-        var context = await ExRunAsync(ExCreateException(exceptionKind));
+        var context = await ExRunAsync(ExCreateException(exceptionKind), options: new ExceptionHandlingOptions { MapCommonExceptions = true });
 
         Assert.Equal(expectedStatusCode, context.Response.StatusCode);
         Assert.Equal("application/json", context.Response.ContentType);
@@ -625,7 +627,7 @@ public sealed class ExceptionHandlingMiddlewareTests
     [Fact]
     public async Task InvokeAsync_UnhandledExceptionMappedToAClientError_StillWritesTheGenericMessage()
     {
-        var context = await ExRunAsync(new KeyNotFoundException("ex-secret-cache-key"));
+        var context = await ExRunAsync(new KeyNotFoundException("ex-secret-cache-key"), options: new ExceptionHandlingOptions { MapCommonExceptions = true });
 
         Assert.Equal(StatusCodes.Status404NotFound, context.Response.StatusCode);
         Assert.Equal(ExBuiltInUnknownMessage, ExFirstError(context));

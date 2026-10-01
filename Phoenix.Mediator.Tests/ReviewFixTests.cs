@@ -13,6 +13,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Phoenix.Mediator.Abstractions;
 using Phoenix.Mediator.Mediator;
 using Phoenix.Mediator.Validation;
@@ -184,7 +185,7 @@ public sealed class ReviewFixTests
     }
 
     // Finding 18: .NET throws UnauthorizedAccessException for file permission errors too, so a 401
-    // that leaves no trace in the log hides server misconfiguration.
+    // that leaves no trace in the log hides server misconfiguration. Only MapCommonExceptions makes it a 401.
     [Fact]
     public async Task ExceptionHandlingMiddleware_LogsUnauthorizedAccessException()
     {
@@ -193,7 +194,11 @@ public sealed class ReviewFixTests
 
         var recorder = new RecordingLoggerProvider();
         RequestDelegate next = _ => throw new UnauthorizedAccessException("Access to the path 'x' is denied.");
-        var middleware = new ExceptionHandlingMiddleware(next, recorder.CreateLogger<ExceptionHandlingMiddleware>(), new ConfigurationBuilder().Build());
+        var middleware = new ExceptionHandlingMiddleware(
+            next,
+            recorder.CreateLogger<ExceptionHandlingMiddleware>(),
+            new ConfigurationBuilder().Build(),
+            Options.Create(new ExceptionHandlingOptions { MapCommonExceptions = true }));
 
         await middleware.InvokeAsync(context);
 

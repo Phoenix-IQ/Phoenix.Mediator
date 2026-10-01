@@ -303,12 +303,12 @@ builder.Services.Configure<ExceptionHandlingOptions>(options => options
 - A mapping also covers exceptions derived from its type, and the most specific mapping wins.
 - `HttpResponseException`, the framework's bad-request exceptions and cancelled requests are handled before any mapping.
 
-`ArgumentException` → `400`, `KeyNotFoundException` → `404` and `UnauthorizedAccessException` → `401` are mapped too, as
-in every earlier version. These are usually server-side bugs rather than bad requests, so consider turning them off;
-they then become `500`s, logged at Error. The default is planned to change in 3.0.
+`ArgumentException`, `KeyNotFoundException` and `UnauthorizedAccessException` are `500`s, logged at Error: they are
+usually server-side bugs rather than bad requests. Versions before 3.0.0 mapped them to `400`, `404` and `401`; to keep
+that:
 
 ```csharp
-builder.Services.Configure<ExceptionHandlingOptions>(options => options.MapCommonExceptions = false);
+builder.Services.Configure<ExceptionHandlingOptions>(options => options.MapCommonExceptions = true);
 ```
 
 ### Logging
@@ -318,8 +318,8 @@ caller's doing, and a stack trace per bad request buried the real failures in th
 the route, the status, the exception type and the messages. Change the level with
 `ExceptionHandlingOptions.ClientErrorLogLevel`. Server errors (5xx) are logged at `Error`, with the exception.
 
-The common-exception mappings keep their old levels, because those exceptions usually mean a server-side bug:
-`ArgumentException` → `400` and `KeyNotFoundException` → `404` are logged at `Error`, and
+With `MapCommonExceptions` on, the common-exception mappings keep their old levels, because those exceptions usually
+mean a server-side bug: `ArgumentException` → `400` and `KeyNotFoundException` → `404` are logged at `Error`, and
 `UnauthorizedAccessException` → `401` at `Warning`, both with the exception.
 
 ## Endpoint helpers
@@ -614,11 +614,11 @@ Notes:
 
 ## Upgrading
 
-### 2.5.0
+### 3.0.0
 
 - **Endpoints return what `sender.Send(...)` returns; `SendAsApiResult` and `ToApiResult` are removed** — a breaking
-  change, made in a minor release. The endpoint helpers (`Get`, `Post`, `Put`, `Patch`, `Delete` and the
-  `...MultiPart` ones) now map the result themselves, the way both of those did. In endpoints, replace
+  change. The endpoint helpers (`Get`, `Post`, `Put`, `Patch`, `Delete` and the `...MultiPart` ones) now map the
+  result themselves, the way both of those did. In endpoints, replace
   `sender.SendAsApiResult(x, ct)` with `sender.Send(x, ct)`, and `(await sender.Send(x, ct)).ToApiResult()` with
   `await sender.Send(x, ct)`. An endpoint mapped with ASP.NET Core's own `MapGet`/`MapPost` isn't mapped: switch it to
   the helpers. `IMediatorOptionsAccessor` only existed for `SendAsApiResult` and is removed too; read the options from
@@ -630,7 +630,7 @@ Notes:
   endpoint that returns an `IResult` itself is left alone.
 - **The error body for a returned `ErrorResponse` always has a trace id.** Without an `Activity` it falls back to
   `HttpContext.TraceIdentifier`, like the exception middleware; it used to be `null`.
-- **`BaseEndpointGroup.Map(WebApplication)` is removed** — a breaking change, made in a minor release. Groups override
+- **`BaseEndpointGroup.Map(WebApplication)` is removed** — a breaking change. Groups override
   `Map(IEndpointRouteBuilder)` (namespace `Microsoft.AspNetCore.Routing`), which is now abstract:
   `public override void Map(IEndpointRouteBuilder app)`. Usually only the parameter type changes, along with that of
   any helper method the group passes `app` to. A group that used `app.Configuration` or `app.Environment` takes
@@ -639,7 +639,7 @@ Notes:
   unless they set tags of their own: OpenAPI tools such as Swagger UI then list them under that name. Set
   `TagEndpointsWithGroupName = false` to keep them untagged.
 - **`ResponseDto` is removed**, with the `responseDtos` parameter of the endpoint helpers and the
-  `Phoenix.Mediator.Web.Dtos` namespace — a breaking change, made in a minor release. The helpers document the success
+  `Phoenix.Mediator.Web.Dtos` namespace — a breaking change. The helpers document the success
   response the way they did when no `ResponseDto` was passed: from the request the delegate takes. Delete the
   `ResponseDto` arguments and `using Phoenix.Mediator.Web.Dtos;`. To document another response, chain ASP.NET Core's
   `.Produces<T>(statusCode)` on the endpoint.
@@ -648,6 +648,12 @@ Notes:
   sits outside it, reported every disconnect as an unhandled error. A request timeout is still rethrown, so
   `UseRequestTimeouts` writes its `504`. Only `UseRequestTimeouts` is told apart from a disconnect: a timeout
   middleware of your own that cancels `RequestAborted` now sees the request end with `499` instead of the exception.
+- **`ArgumentException`, `KeyNotFoundException` and `UnauthorizedAccessException` are `500`s by default**, logged at
+  `Error`: `ExceptionHandlingOptions.MapCommonExceptions` now defaults to `false`. They used to be `400`, `404` and
+  `401`, which told the caller they had sent a bad request when the cause was usually a server-side bug, and kept the
+  failure out of 5xx monitoring. Where a handler means one of those statuses, throw `BadRequestException`,
+  `NotFoundException`, `UnauthorizedException` or `ForbiddenException`. Set `MapCommonExceptions = true` to keep the old
+  mapping.
 
 ### 2.4.0
 
@@ -688,7 +694,7 @@ Most apps upgrade without code changes; the bullets below that can need one say 
   with those names and imports `Phoenix.Mediator.Exceptions` gets an ambiguous-name error: delete its own if they only
   set the status, or qualify the name.
 - **`BaseEndpointGroup.Map(IEndpointRouteBuilder)`** is the overload to override. `Map(WebApplication)` (removed in
-  2.5.0) keeps working on its own, but not together with `RoutePrefix` or `ConfigureEndpoints`.
+  3.0.0) keeps working on its own, but not together with `RoutePrefix` or `ConfigureEndpoints`.
 
 ### 2.2.0
 
@@ -706,12 +712,12 @@ Most apps upgrade without code changes; the bullets below that can need one say 
   Pass roles as separate arguments for OR semantics.
 - **Cancelled requests are no longer turned into `500`.** The exception-handling middleware rethrows cancellation
   when the request was aborted, so `UseRequestTimeouts` can write its `504` and client disconnects stop filling the
-  error log. (Since 2.5.0 only a timeout is rethrown; a disconnect ends with `499`.)
+  error log. (Since 3.0.0 only a timeout is rethrown; a disconnect ends with `499`.)
 - **Framework bad requests keep their status code.** Malformed JSON, missing required parameters, invalid
   antiforgery tokens and oversized forms return their real status (`400`, `413`, ...) with the standard
   `{"errors":[...],"traceId":"..."}` body, instead of `500` in Development.
-- **`UnauthorizedAccessException` is logged** (still mapped to `401`). .NET throws it for file-permission errors too,
-  so it should never pass silently.
+- **`UnauthorizedAccessException` is logged** (still mapped to `401`; since 3.0.0 a `500` unless `MapCommonExceptions` is
+  on). .NET throws it for file-permission errors too, so it should never pass silently.
 - **`MultiResponse<T>`** takes an `IReadOnlyList<T>` in its constructor and exposes `PageSize`, so it can be
   deserialized (`ReadFromJsonAsync<MultiResponse<T>>`) as well as serialized. Existing `new MultiResponse<T>(list, …)`
   calls keep compiling.

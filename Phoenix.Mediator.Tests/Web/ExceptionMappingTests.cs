@@ -276,12 +276,12 @@ public sealed class ExceptionMappingTests
     // ---------------------------------------------------------------------------------------------
 
     [Fact]
-    public void MapCommonExceptions_IsOnByDefault()
+    public void MapCommonExceptions_IsOffByDefault()
     {
-        Assert.True(new ExceptionHandlingOptions().MapCommonExceptions);
+        Assert.False(new ExceptionHandlingOptions().MapCommonExceptions);
     }
 
-    // Off, these are what they usually are: server-side bugs, reported as 500 and logged at Error.
+    // Off (the default), these are what they usually are: server-side bugs, reported as 500 and logged at Error.
     [Theory]
     [InlineData("argument")]
     [InlineData("argument-null")]
@@ -298,14 +298,14 @@ public sealed class ExceptionMappingTests
             _ => new UnauthorizedAccessException("em-detail"),
         };
 
-        var context = await RunAsync(exception, new ExceptionHandlingOptions { MapCommonExceptions = false }, logger: new Logger<ExceptionHandlingMiddleware>(recorder));
+        var context = await RunAsync(exception, new ExceptionHandlingOptions(), logger: new Logger<ExceptionHandlingMiddleware>(recorder));
 
         Assert.Equal(StatusCodes.Status500InternalServerError, context.Response.StatusCode);
         Assert.Equal(new[] { UnknownError }, Errors(context));
         Assert.Contains(recorder.Entries, entry => entry.Level == LogLevel.Error && ReferenceEquals(entry.Exception, exception));
     }
 
-    // On (the default) the behavior of every earlier version is unchanged, 401 with no body included.
+    // On, the behavior of versions before 3.0 is unchanged, 401 with no body included.
     [Theory]
     [InlineData("argument", 400)]
     [InlineData("key-not-found", 404)]
@@ -319,7 +319,7 @@ public sealed class ExceptionMappingTests
             _ => new UnauthorizedAccessException("em-detail"),
         };
 
-        var context = await RunAsync(exception, new ExceptionHandlingOptions());
+        var context = await RunAsync(exception, new ExceptionHandlingOptions { MapCommonExceptions = true });
 
         Assert.Equal(expectedStatusCode, context.Response.StatusCode);
     }
@@ -363,7 +363,7 @@ public sealed class ExceptionMappingTests
         builder.Services.AddMediator();
         builder.Services.Configure<ExceptionHandlingOptions>(static options => options
             .Map<EmConcurrencyException>(HttpStatusCode.Conflict, static _ => "em-changed")
-            .MapCommonExceptions = false);
+            .MapCommonExceptions = true);
         await using var app = builder.Build();
 
         app.UsePhoenixExceptionHandling();
@@ -373,11 +373,12 @@ public sealed class ExceptionMappingTests
         using var client = app.GetTestClient();
 
         var mapped = await client.GetAsync("em/concurrency");
-        var unmapped = await client.GetAsync("em/argument");
+        var argument = await client.GetAsync("em/argument");
 
         Assert.Equal(HttpStatusCode.Conflict, mapped.StatusCode);
         Assert.Contains("em-changed", await mapped.Content.ReadAsStringAsync());
-        Assert.Equal(HttpStatusCode.InternalServerError, unmapped.StatusCode);
+        // A 500 by default: the 400 shows the configured MapCommonExceptions arrived too.
+        Assert.Equal(HttpStatusCode.BadRequest, argument.StatusCode);
     }
 
     // ---------------------------------------------------------------------------------------------

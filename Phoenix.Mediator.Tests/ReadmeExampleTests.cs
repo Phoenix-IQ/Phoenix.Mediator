@@ -1103,15 +1103,25 @@ public sealed class ReadmeExampleTests
         Assert.Equal("Unknown error occurred", JsonBody(await circuit.Content.ReadAsStringAsync()).GetProperty("errors")[0].GetString());
     }
 
-    // "consider turning them off; they then become 500s".
+    // "ArgumentException, KeyNotFoundException and UnauthorizedAccessException are 500s, logged at Error."
     [Fact]
-    public async Task ExceptionHandlingOptions_MapCommonExceptionsOff_TurnsAnArgumentExceptionIntoA500()
+    public async Task ExceptionHandling_TurnsAnArgumentExceptionIntoA500_ByDefault()
     {
-        await using var app = await StartErrorReadmeAppAsync(static services =>
-            services.Configure<ExceptionHandlingOptions>(options => options.MapCommonExceptions = false));
+        await using var app = await StartErrorReadmeAppAsync(configure: null);
         using var client = app.GetTestClient();
 
         Assert.Equal(HttpStatusCode.InternalServerError, (await client.GetAsync("readme-errors/argument")).StatusCode);
+    }
+
+    // "Versions before 3.0.0 mapped them to 400, 404 and 401; to keep that:" and the snippet.
+    [Fact]
+    public async Task ExceptionHandlingOptions_MapCommonExceptionsOn_TurnsAnArgumentExceptionIntoA400()
+    {
+        await using var app = await StartErrorReadmeAppAsync(static services =>
+            services.Configure<ExceptionHandlingOptions>(options => options.MapCommonExceptions = true));
+        using var client = app.GetTestClient();
+
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("readme-errors/argument")).StatusCode);
     }
 
     // "Client errors (4xx) are logged at Information, without the stack trace ... Server errors (5xx) are logged at
@@ -1992,8 +2002,8 @@ public sealed class ReadmeExampleTests
     // startup" is asserted above in RequireRole_RejectsFlagsCombinations /
     // RequireRole_RejectsUndefinedEnumValues. Depth: ReviewFixTests.RequireRole_RejectsFlagsCombinationsAndUndefinedValues.
 
-    // "Cancelled requests are no longer turned into 500." 2.5.0 refined how: only a timeout is rethrown, and a
-    // client disconnect ends with 499 (asserted in the 2.5.0 test below).
+    // "Cancelled requests are no longer turned into 500." 3.0.0 refined how: only a timeout is rethrown, and a
+    // client disconnect ends with 499 (asserted in the 3.0.0 test below).
     // Depth: ReviewFixTests.ExceptionHandlingMiddleware_DoesNotReportCancellationAsAServerError_WhenRequestWasAborted.
     [Fact]
     public async Task Upgrade_CancelledRequestsAreNoLongerTurnedIntoServerErrors()
@@ -2008,7 +2018,7 @@ public sealed class ReadmeExampleTests
         Assert.NotEqual(StatusCodes.Status500InternalServerError, response.StatusCode);
     }
 
-    // README "Upgrading / 2.5.0", kept beside the 2.1.0 note it refines: "A client that disconnects no longer leaves
+    // README "Upgrading / 3.0.0", kept beside the 2.1.0 note it refines: "A client that disconnects no longer leaves
     // an unhandled exception. The exception-handling middleware ends the request with 499 ... A request timeout is
     // still rethrown, so UseRequestTimeouts writes its 504." Depth: ExceptionHandlingMiddlewareTests, the
     // BehindUseRequestTimeouts tests.
@@ -2061,19 +2071,23 @@ public sealed class ReadmeExampleTests
         Assert.True(response.Json.TryGetProperty("traceId", out _));
     }
 
-    // "UnauthorizedAccessException is logged (still mapped to 401). .NET throws it for file-permission errors
-    // too, so it should never pass silently." Depth: ReviewFixTests.ExceptionHandlingMiddleware_LogsUnauthorizedAccessException.
+    // "UnauthorizedAccessException is logged (still mapped to 401; since 3.0.0 a 500 unless MapCommonExceptions is on).
+    // .NET throws it for file-permission errors too, so it should never pass silently."
+    // Depth: ReviewFixTests.ExceptionHandlingMiddleware_LogsUnauthorizedAccessException.
     [Fact]
-    public async Task Upgrade_UnauthorizedAccessExceptionIsLoggedAndStillMapsToUnauthorized()
+    public async Task Upgrade_UnauthorizedAccessExceptionIsLogged_AndIs401OnlyWithMapCommonExceptions()
     {
         var logs = new RecordingLoggerProvider();
 
-        var response = await RunExceptionMiddlewareAsync(
+        var mapped = await RunExceptionMiddlewareAsync(
             new UnauthorizedAccessException("Access to the path 'x' is denied."),
-            logger: new Logger<ExceptionHandlingMiddleware>(logs));
+            logger: new Logger<ExceptionHandlingMiddleware>(logs),
+            options: new ExceptionHandlingOptions { MapCommonExceptions = true });
+        var byDefault = await RunExceptionMiddlewareAsync(new UnauthorizedAccessException("Access to the path 'x' is denied."));
 
-        Assert.Equal(StatusCodes.Status401Unauthorized, response.StatusCode);
+        Assert.Equal(StatusCodes.Status401Unauthorized, mapped.StatusCode);
         Assert.Contains(logs.Warnings, entry => entry.Exception is UnauthorizedAccessException);
+        Assert.Equal(StatusCodes.Status500InternalServerError, byDefault.StatusCode);
     }
 
     // "MultiResponse<T> takes an IReadOnlyList<T> in its constructor and exposes PageSize, so it can be
@@ -2436,7 +2450,8 @@ public sealed class ReadmeExampleTests
         IConfiguration? configuration = null,
         string? acceptLanguage = null,
         ILogger<ExceptionHandlingMiddleware>? logger = null,
-        CancellationToken requestAborted = default)
+        CancellationToken requestAborted = default,
+        ExceptionHandlingOptions? options = null)
     {
         var context = new DefaultHttpContext { RequestAborted = requestAborted };
         context.Response.Body = new MemoryStream();
@@ -2444,10 +2459,16 @@ public sealed class ReadmeExampleTests
         if (!string.IsNullOrWhiteSpace(acceptLanguage))
             context.Request.Headers.AcceptLanguage = acceptLanguage;
 
-        var middleware = new ExceptionHandlingMiddleware(
-            _ => throw exception,
-            logger ?? NullLogger<ExceptionHandlingMiddleware>.Instance,
-            configuration ?? new ConfigurationBuilder().Build());
+        var middleware = options is null
+            ? new ExceptionHandlingMiddleware(
+                _ => throw exception,
+                logger ?? NullLogger<ExceptionHandlingMiddleware>.Instance,
+                configuration ?? new ConfigurationBuilder().Build())
+            : new ExceptionHandlingMiddleware(
+                _ => throw exception,
+                logger ?? NullLogger<ExceptionHandlingMiddleware>.Instance,
+                configuration ?? new ConfigurationBuilder().Build(),
+                Options.Create(options));
 
         await middleware.InvokeAsync(context);
 
