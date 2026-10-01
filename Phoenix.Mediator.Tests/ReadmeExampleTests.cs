@@ -1,4 +1,5 @@
-﻿using System.Globalization;
+﻿using System.Diagnostics;
+using System.Globalization;
 using System.Net;
 using System.Reflection;
 using System.Runtime.Serialization;
@@ -6,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using FluentValidation;
 using Microsoft.AspNetCore.Antiforgery;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -18,6 +20,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -517,6 +520,65 @@ public sealed class ReadmeExampleTests
     }
 
     // ---------------------------------------------------------------------------------------------
+    // README "Shared route prefix and conventions"
+    // ---------------------------------------------------------------------------------------------
+    // EndpointGroupSettingsTests.cs covers every rule; these run the README's snippet on the quick start group.
+
+    // The snippet, verbatim: every group under /api, and RequireAuthorization() applied once for all of them.
+    [Fact]
+    public async Task MapEndpoints_SharedPrefixAndConventions_ReachTheQuickStartGroup()
+    {
+        await using var app = await StartSharedSettingsAppAsync(new MapEndpointsOptions
+        {
+            RoutePrefix = "api",                                                // GET /api/greeting/hello
+            ConfigureEndpoints = endpoints => endpoints.RequireAuthorization()  // every group, no group can forget it
+        });
+        using var client = app.GetTestClient();
+
+        var anonymous = await client.GetAsync("api/readmegreeting/hello?name=Ada");
+        using var signedInRequest = new HttpRequestMessage(HttpMethod.Get, "api/readmegreeting/hello?name=Ada");
+        signedInRequest.Headers.TryAddWithoutValidation(RoleHeaderAuthenticationHandler.RolesHeader, "User");
+        var signedIn = await client.SendAsync(signedInRequest);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, signedIn.StatusCode);
+        Assert.Equal("Hello Ada", JsonBody(await signedIn.Content.ReadAsStringAsync()).GetProperty("result").GetString());
+    }
+
+    // "The health endpoint is not prefixed."
+    [Fact]
+    public async Task MapEndpoints_WithARoutePrefix_KeepsTheHealthEndpointAtItsOwnPath()
+    {
+        await using var app = await StartSharedSettingsAppAsync(new MapEndpointsOptions { RoutePrefix = "api" });
+        using var client = app.GetTestClient();
+
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("health")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("api/health")).StatusCode);
+    }
+
+    // "Each group's endpoints are tagged with its GroupName, which is how OpenAPI tools group them."
+    [Fact]
+    public async Task MapEndpoints_TagsTheQuickStartGroupsEndpointsWithItsGroupName()
+    {
+        await using var app = await StartSharedSettingsAppAsync(new MapEndpointsOptions());
+
+        Assert.Equal(
+            new[] { "readmegreeting" },
+            app.Endpoint("readmegreeting/hello").Metadata.OfType<ITagsMetadata>().SelectMany(static metadata => metadata.Tags));
+    }
+
+    // "A group that still overrides Map(WebApplication) ... MapEndpoints throws and names it."
+    [Fact]
+    public async Task MapEndpoints_WithARoutePrefix_RefusesAGroupStillOnTheWebApplicationOverload()
+    {
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => StartSharedSettingsAppAsync(
+            new MapEndpointsOptions { RoutePrefix = "api" },
+            typeof(ReadmeHost<object>.ReadmeDuplicateUserEndpoints)));
+
+        Assert.Contains(typeof(ReadmeHost<object>.ReadmeDuplicateUserEndpoints).FullName!, exception.Message);
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // README "Duplicate routes"
     // ---------------------------------------------------------------------------------------------
     // DuplicateEndpointTests.cs covers the detector's edge cases in depth; these pin the specific claims the
@@ -669,8 +731,23 @@ public sealed class ReadmeExampleTests
     // README "Sending requests"
     // ---------------------------------------------------------------------------------------------
 
-    // "IRequest<TResponse>: pass both type arguments." The README warns that omitting them binds to
-    // Send(object), which returns object?, so the two-type-argument overload must return the response itself.
+    // "SingleResponse<string> greeting = await sender.Send(query, cancellationToken);" — the response type is
+    // inferred from the request. The declared type of the local is the assertion: Task<SingleResponse<string>>
+    // does not convert from Task<object?>, so if the call ever bound to Send(object) again this stops compiling.
+    [Fact]
+    public async Task Send_WithoutTypeArguments_InfersTheResponseType()
+    {
+        await using var provider = CreateReadmeProvider();
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+
+        Task<SingleResponse<string>> pending = sender.Send(new ReadmeGetGreetingQuery { Name = "Ada" }, CancellationToken.None);
+
+        Assert.Equal("Hello Ada", (await pending).Result);
+    }
+
+    // "The two-type-argument form Send<GetGreetingQuery, SingleResponse<string>>(query) still works" — code written
+    // before the response type could be inferred keeps compiling and returning the response itself.
     [Fact]
     public async Task Send_WithBothTypeArguments_ReturnsTheHandlerResponse()
     {
@@ -685,30 +762,18 @@ public sealed class ReadmeExampleTests
         Assert.Equal("Hello Ada", greeting.Result);
     }
 
-    // The other half of that warning: a call written WITHOUT the type arguments really does bind to
-    // Send(object). The declared type of the local is the assertion the README's advice rests on - the request
-    // is passed as itself, not cast, and Task<SingleResponse<string>> does not convert to Task<object?>, so if
-    // an overload ever made TResponse inferable this stops compiling and the warning can be deleted.
-    [Fact]
-    public async Task Send_WithoutTypeArguments_BindsToTheObjectOverload()
-    {
-        await using var provider = CreateReadmeProvider();
-        using var scope = provider.CreateScope();
-        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-
-        Task<object?> pending = sender.Send(new ReadmeGetGreetingQuery { Name = "Ada" }, CancellationToken.None);
-
-        Assert.Equal("Hello Ada", Assert.IsType<SingleResponse<string>>(await pending).Result);
-    }
-
     // "IRequest (no response): returns a plain Task." The README leans on this to explain why
     // (await sender.Send(command)).ToApiResult() does not compile, so the return type is part of the contract.
+    // The void overload is the one-type-argument Send whose parameter IS its type argument; the other one-type-argument
+    // Send takes an IRequest<TResponse>.
     [Fact]
     public void Send_VoidOverload_IsDeclaredToReturnAPlainTask()
     {
         var voidSend = Assert.Single(
             typeof(ISender).GetMethods(),
-            method => method.Name == nameof(ISender.Send) && method.GetGenericArguments().Length == 1);
+            method => method.Name == nameof(ISender.Send)
+                && method.GetGenericArguments().Length == 1
+                && method.GetParameters()[0].ParameterType.IsGenericParameter);
 
         Assert.Equal(typeof(Task), voidSend.ReturnType);
     }
@@ -983,6 +1048,84 @@ public sealed class ReadmeExampleTests
 
         await Assert.ThrowsAsync<NotFoundException>(() =>
             sender.SendAsApiResult(new ReadmeMissingStudentQuery(), CancellationToken.None));
+    }
+
+    // "Built-in exception types": each one's status, as the list states it.
+    [Fact]
+    public void BuiltInExceptionTypes_CarryTheStatusTheReadmeListsForThem()
+    {
+        Assert.Equal(HttpStatusCode.BadRequest, new BadRequestException("readme").HttpStatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, new UnauthorizedException("readme").HttpStatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, new ForbiddenException("readme").HttpStatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, new NotFoundException("readme").HttpStatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, new ConflictException("readme").HttpStatusCode);
+    }
+
+    // The README's fieldErrors JSON sample: produced here by a handler validating on its own with
+    // ValidateAndThrowAsync, which the Validation section says gets the same 400.
+    [Fact]
+    public async Task ErrorBody_ForAValidationFailure_MatchesTheReadmeSample()
+    {
+        await using var app = await StartErrorReadmeAppAsync(static services =>
+            services.AddTransient<IRequestHandler<ReadmeSubscribeCommand, SingleResponse<string>>, ReadmeHost<object>.ReadmeSubscribeCommandHandler>());
+        using var client = app.GetTestClient();
+
+        var response = await client.PostAsync("readme-errors/subscribe", new StringContent("""{"email":"not-an-email"}""", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = JsonBody(await response.Content.ReadAsStringAsync());
+        Assert.Equal(new[] { "errors", "fieldErrors", "traceId" }, body.EnumerateObject().Select(static member => member.Name).Order(StringComparer.Ordinal));
+        Assert.Equal("'Email' is not a valid email address.", body.GetProperty("errors")[0].GetString());
+        Assert.Equal("'Email' is not a valid email address.", body.GetProperty("fieldErrors").GetProperty("email")[0].GetString());
+    }
+
+    // "### Mapping your own exceptions", the snippet verbatim apart from its two exception types, which come from EF Core
+    // and Polly and have stand-ins here.
+    [Fact]
+    public async Task ExceptionHandlingOptions_TheReadmeMappings_AnswerWithTheirStatusAndMessage()
+    {
+        await using var app = await StartErrorReadmeAppAsync(static services =>
+            services.Configure<ExceptionHandlingOptions>(options => options
+                .Map<ReadmeStandIns.DbUpdateConcurrencyException>(HttpStatusCode.Conflict, _ => "Someone else changed this record. Reload and try again.")
+                .Map<ReadmeStandIns.BrokenCircuitException>(HttpStatusCode.ServiceUnavailable)));
+        using var client = app.GetTestClient();
+
+        var concurrency = await client.GetAsync("readme-errors/concurrency");
+        var circuit = await client.GetAsync("readme-errors/circuit");
+
+        Assert.Equal(HttpStatusCode.Conflict, concurrency.StatusCode);
+        Assert.Equal("Someone else changed this record. Reload and try again.", JsonBody(await concurrency.Content.ReadAsStringAsync()).GetProperty("errors")[0].GetString());
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, circuit.StatusCode);
+        // "Map<T>(status) answers with the generic unknown-error message": never the exception's own.
+        Assert.Equal("Unknown error occurred", JsonBody(await circuit.Content.ReadAsStringAsync()).GetProperty("errors")[0].GetString());
+    }
+
+    // "consider turning them off; they then become 500s".
+    [Fact]
+    public async Task ExceptionHandlingOptions_MapCommonExceptionsOff_TurnsAnArgumentExceptionIntoA500()
+    {
+        await using var app = await StartErrorReadmeAppAsync(static services =>
+            services.Configure<ExceptionHandlingOptions>(options => options.MapCommonExceptions = false));
+        using var client = app.GetTestClient();
+
+        Assert.Equal(HttpStatusCode.InternalServerError, (await client.GetAsync("readme-errors/argument")).StatusCode);
+    }
+
+    // "Client errors (4xx) are logged at Information, without the stack trace ... Server errors (5xx) are logged at
+    // Error, with the exception."
+    [Fact]
+    public async Task Logging_ClientErrorsAtInformationWithoutTheStackTrace_ServerErrorsAtErrorWithIt()
+    {
+        var logs = new RecordingLoggerProvider();
+        await using var app = await StartErrorReadmeAppAsync(configure: null, logs);
+        using var client = app.GetTestClient();
+
+        await client.GetAsync("readme-errors/missing");
+        await client.GetAsync("readme-errors/boom");
+
+        var middlewareLogs = logs.Entries.Where(static entry => entry.Category == typeof(ExceptionHandlingMiddleware).FullName).ToArray();
+        Assert.Contains(middlewareLogs, static entry => entry.Level == LogLevel.Information && entry.Exception is null && entry.Message.Contains("404"));
+        Assert.Contains(middlewareLogs, static entry => entry.Level == LogLevel.Error && entry.Exception is InvalidOperationException);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1708,6 +1851,72 @@ public sealed class ReadmeExampleTests
     }
 
     // ---------------------------------------------------------------------------------------------
+    // README "Pipeline behaviors"
+    // ---------------------------------------------------------------------------------------------
+    // RequestBehaviorTests.cs covers ordering, short-circuiting and constraints; this runs the README's behavior.
+
+    // The README's TimingBehavior, registered the README's way: one class, a request with a response and one without.
+    [Fact]
+    public async Task TimingBehavior_RunsForARequestWithAResponseAndForOneWithout()
+    {
+        var logs = new RecordingLoggerProvider();
+        var services = new ServiceCollection();
+        services.AddLogging(logging => logging.AddProvider(logs));
+        services.AddMediator(new FakeAssembly(
+            "Readme.Behaviors",
+            typeof(ReadmeGetGreetingQuery), typeof(ReadmeGetGreetingQueryHandler), typeof(ReadmeCompleteCommand), typeof(ReadmeCompleteCommandHandler)));
+
+        services.AddMediatorBehavior(typeof(ReadmeTimingBehavior<>));
+
+        await using var provider = services.BuildServiceProvider(validateScopes: true);
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+
+        var greeting = await sender.Send(new ReadmeGetGreetingQuery { Name = "Ada" });
+        await sender.Send(new ReadmeCompleteCommand());
+
+        Assert.Equal("Hello Ada", greeting.Result);
+        Assert.Contains(logs.Messages, static message => message.StartsWith($"{nameof(ReadmeGetGreetingQuery)} took ", StringComparison.Ordinal));
+        Assert.Contains(logs.Messages, static message => message.StartsWith($"{nameof(ReadmeCompleteCommand)} took ", StringComparison.Ordinal));
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // README "Checking handlers at startup"
+    // ---------------------------------------------------------------------------------------------
+
+    // The README's snippet: Throw in Development, Warn elsewhere.
+    [Theory]
+    [InlineData("Development")]
+    [InlineData("Production")]
+    public async Task MissingHandlerHandling_ThrowsInDevelopmentAndWarnsElsewhere(string environment)
+    {
+        var logs = new RecordingLoggerProvider();
+        var builder = TestApps.CreateBuilder(environment, logs);
+        builder.WebHost.UseTestServer();
+        var assembly = new FakeAssembly("Readme.MissingHandlers", typeof(ReadmeUnhandledQuery));
+
+        builder.Services.AddMediator(options =>
+        {
+            options.MissingHandlerHandling = builder.Environment.IsDevelopment()
+                ? MissingHandlerHandling.Throw
+                : MissingHandlerHandling.Warn;
+        }, assembly);
+
+        await using var app = builder.Build();
+
+        if (builder.Environment.IsDevelopment())
+        {
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => app.StartAsync());
+            Assert.Contains(typeof(ReadmeUnhandledQuery).FullName!, exception.Message);
+        }
+        else
+        {
+            await app.StartAsync();
+            Assert.Contains(logs.Warnings, static warning => warning.Message.Contains(typeof(ReadmeUnhandledQuery).FullName!));
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // README "Optional logging helpers"
     // ---------------------------------------------------------------------------------------------
 
@@ -1743,7 +1952,38 @@ public sealed class ReadmeExampleTests
     }
 
     // ---------------------------------------------------------------------------------------------
-    // README "Upgrading / Behavior changes after 2.0.6"
+    // README "Upgrading / 2.3.0"
+    // ---------------------------------------------------------------------------------------------
+
+    // "API versioning no longer fails startup." Owned by DuplicateEndpointTests.cs.
+    [Fact]
+    public void Upgrade_OneEndpointPerApiVersionIsNotReportedAsADuplicate()
+    {
+        var builder = TestApps.CreateBuilder();
+        builder.Services.AddMediator();
+        builder.Services.AddApiVersioning();
+        var app = builder.Build();
+        var versions = app.NewApiVersionSet().HasApiVersion(new Asp.Versioning.ApiVersion(1, 0)).HasApiVersion(new Asp.Versioning.ApiVersion(2, 0)).Build();
+
+        app.MapGroup("readme-versions").Get("/", () => "v1").WithApiVersionSet(versions).MapToApiVersion(1.0);
+        app.MapGroup("readme-versions").Get("/", () => "v2").WithApiVersionSet(versions).MapToApiVersion(2.0);
+
+        app.ValidateNoDuplicateEndpoints();
+    }
+
+    // "A bare null passed with one explicit type argument no longer compiles; cast it." The cast form, compiled here.
+    [Fact]
+    public async Task Upgrade_ANullRequestWithOneExplicitTypeArgument_CompilesOnceCast()
+    {
+        await using var provider = CreateReadmeProvider();
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+
+        await Assert.ThrowsAsync<ArgumentNullException>(() => sender.Send<IRequest>((IRequest)null!));
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // README "Upgrading / 2.1.0"
     // ---------------------------------------------------------------------------------------------
     // Every bullet in that list is a promise an upgrading consumer reads and then relies on. Most are covered
     // in depth elsewhere in the suite; the duplication here is deliberate, so that editing the README against
@@ -1960,6 +2200,68 @@ public sealed class ReadmeExampleTests
         builder.Services.AddMediator(typeof(ReadmeExampleTests).Assembly);
         builder.Services.AddAuthorization();
         return builder.Build();
+    }
+
+    /// <summary>
+    /// A started test-server app whose discovery sees only <paramref name="groups"/> (the quick start group by default):
+    /// the application name matches no assembly, so the older groups elsewhere in this assembly, which stay on the
+    /// WebApplication overload, are not mapped under the shared settings. Callers are signed in through the role header.
+    /// </summary>
+    private static async Task<WebApplication> StartSharedSettingsAppAsync(MapEndpointsOptions options, params Type[] groups)
+    {
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+        {
+            ApplicationName = "Phoenix.Mediator.Tests.ReadmeSharedSettings",
+            ContentRootPath = AppContext.BaseDirectory,
+            EnvironmentName = Environments.Production
+        });
+        builder.WebHost.UseTestServer();
+        builder.Services.AddMediator(ReadmeGreetingAssembly());
+        builder.Services
+            .AddAuthentication(RoleHeaderAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, RoleHeaderAuthenticationHandler>(RoleHeaderAuthenticationHandler.SchemeName, static _ => { });
+        builder.Services.AddAuthorization();
+
+        var app = builder.Build();
+        try
+        {
+            app.MapEndpoints(options, new FakeAssembly(
+                "Readme.SharedSettings.Groups",
+                groups.Length > 0 ? groups : [typeof(ReadmeHost<object>.ReadmeGreetingEndpoints)]));
+            await app.StartAsync();
+            return app;
+        }
+        catch
+        {
+            await app.DisposeAsync();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// A started test-server app for the README's error-handling claims: the Phoenix middleware, the validation package,
+    /// and one endpoint per kind of failure under <c>readme-errors/</c>.
+    /// </summary>
+    private static async Task<WebApplication> StartErrorReadmeAppAsync(Action<IServiceCollection>? configure, ILoggerProvider? loggerProvider = null)
+    {
+        var builder = TestApps.CreateBuilder(loggerProvider: loggerProvider);
+        builder.WebHost.UseTestServer();
+        builder.Services.AddMediator().AddMediatorValidation();
+        configure?.Invoke(builder.Services);
+
+        var app = builder.Build();
+        app.UsePhoenixExceptionHandling();
+
+        var errors = app.MapGroup("readme-errors");
+        errors.Post("subscribe", (ISender sender, ReadmeSubscribeCommand command, CancellationToken ct) => sender.SendAsApiResult(command, ct));
+        errors.MapGet("concurrency", () => { throw new ReadmeStandIns.DbUpdateConcurrencyException("0 rows were affected."); });
+        errors.MapGet("circuit", () => { throw new ReadmeStandIns.BrokenCircuitException("The circuit is now open."); });
+        errors.MapGet("argument", () => { throw new ArgumentException("readme-argument"); });
+        errors.MapGet("missing", () => { throw new NotFoundException("Student 5 was not found."); });
+        errors.MapGet("boom", () => { throw new InvalidOperationException("readme-boom"); });
+
+        await app.StartAsync();
+        return app;
     }
 
     /// <summary>
@@ -2410,6 +2712,40 @@ public enum ReadmeFlagsRole
     Manager = 2
 }
 
+/// <summary>README "Response and error behavior": the request the fieldErrors sample is about.</summary>
+public sealed class ReadmeSubscribeCommand : IRequest<SingleResponse<string>>
+{
+    public string Email { get; set; } = string.Empty;
+}
+
+/// <summary>README "Checking handlers at startup": deliberately left without a handler, so the check reports it.</summary>
+public sealed class ReadmeUnhandledQuery : IRequest<string>;
+
+/// <summary>Stand-ins for the two exception types the README's mapping snippet names, from EF Core and Polly.</summary>
+public static class ReadmeStandIns
+{
+    public sealed class DbUpdateConcurrencyException(string message) : Exception(message);
+
+    public sealed class BrokenCircuitException(string message) : Exception(message);
+}
+
+/// <summary>README "Pipeline behaviors": the TimingBehavior, verbatim apart from its name.</summary>
+public sealed class ReadmeTimingBehavior<TRequest>(ILogger<ReadmeTimingBehavior<TRequest>> logger) : IRequestBehavior<TRequest>
+{
+    public async Task<TResponse> Handle<TResponse>(TRequest request, RequestHandlerDelegate<TResponse> next, CancellationToken cancellationToken)
+    {
+        var started = Stopwatch.GetTimestamp();
+        try
+        {
+            return await next();
+        }
+        finally
+        {
+            logger.LogInformation("{Request} took {ElapsedMs} ms", typeof(TRequest).Name, Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+        }
+    }
+}
+
 /// <summary>
 /// Endpoint groups, a validator and a duplicate handler pair, nested inside an open generic so they inherit
 /// its type parameter. <c>ContainsGenericParameters</c> is therefore true for every one of them and the
@@ -2422,7 +2758,7 @@ public static class ReadmeHost<TMarker>
     /// <summary>README "3. Map endpoints via endpoint groups", verbatim apart from the prefix.</summary>
     public sealed class ReadmeGreetingEndpoints : BaseEndpointGroup
     {
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
         {
             app.MapGroup(GroupName)
                 .Get("hello", async (ISender sender, [AsParameters] ReadmeGetGreetingQuery query, CancellationToken ct) =>
@@ -2433,7 +2769,7 @@ public static class ReadmeHost<TMarker>
     /// <summary>README "Authorization": the AdminEndpoints group, with its elided bodies filled in.</summary>
     public sealed class ReadmeAdminEndpoints : BaseEndpointGroup
     {
-        public override void Map(WebApplication app)
+        public override void Map(IEndpointRouteBuilder app)
         {
             app.MapGroup(GroupName)
                 .Get("admin/stats", (ISender sender, CancellationToken ct) =>
@@ -2466,6 +2802,25 @@ public static class ReadmeHost<TMarker>
     {
         public override void Map(WebApplication app)
         {
+        }
+    }
+
+    /// <summary>README "Validation": a handler that validates on its own, with ValidateAndThrowAsync.</summary>
+    public sealed class ReadmeSubscribeCommandHandler : IRequestHandler<ReadmeSubscribeCommand, SingleResponse<string>>
+    {
+        private static readonly InlineValidator<ReadmeSubscribeCommand> Validator = CreateValidator();
+
+        public async Task<SingleResponse<string>> Handle(ReadmeSubscribeCommand request, CancellationToken cancellationToken)
+        {
+            await Validator.ValidateAndThrowAsync(request, cancellationToken);
+            return new SingleResponse<string>("subscribed");
+        }
+
+        private static InlineValidator<ReadmeSubscribeCommand> CreateValidator()
+        {
+            var validator = new InlineValidator<ReadmeSubscribeCommand>();
+            validator.RuleFor(command => command.Email).EmailAddress();
+            return validator;
         }
     }
 

@@ -7,9 +7,11 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
 using Phoenix.Mediator.Exceptions;
 using Phoenix.Mediator.Tests.Infrastructure;
+using Phoenix.Mediator.Web;
 using Phoenix.Mediator.Web.Middlewares;
 using Phoenix.Mediator.Wrappers;
 using Xunit;
@@ -151,20 +153,54 @@ public sealed class ExceptionHandlingMiddlewareTests
         Assert.DoesNotContain(ExEnglishMessage, ExBody(context));
     }
 
-    // The warning is what ties a 404 seen by a client to the code path that produced it.
+    // A 4xx is the caller's doing. It is logged at Information rather than Warning (which the Serilog package routes
+    // into its exception files) and without the exception object: a stack trace per 404 or failed validation buried
+    // the real failures. What ties the log line to the response is still there — route, status, type and messages.
     [Fact]
-    public async Task InvokeAsync_HttpResponseException_LogsAWarningCarryingTheExceptionAndTheRoute()
+    public async Task InvokeAsync_HttpResponseException_LogsAClientErrorAtInformationWithoutTheStackTrace()
     {
         var recorder = new RecordingLoggerProvider();
-        var exception = new NotFoundException("ex-order-missing");
+
+        await ExRunAsync(new NotFoundException("ex-order-missing"), logger: ExLogger(recorder));
+
+        var entry = Assert.Single(recorder.Entries);
+        Assert.Equal(LogLevel.Information, entry.Level);
+        Assert.Null(entry.Exception);
+        Assert.Contains($"{ExRequestMethod} {ExRequestPath}", entry.Message);
+        Assert.Contains("404", entry.Message);
+        Assert.Contains(nameof(NotFoundException), entry.Message);
+        Assert.Contains("ex-order-missing", entry.Message);
+        Assert.Contains(nameof(ExceptionHandlingMiddleware), entry.Category);
+    }
+
+    // A 5xx HttpResponseException is a server problem a handler chose to report (a payment provider is down), so it
+    // gets what an unhandled error gets: Error, with the stack trace.
+    [Fact]
+    public async Task InvokeAsync_HttpResponseExceptionWithServerErrorStatus_LogsAtErrorCarryingTheException()
+    {
+        var recorder = new RecordingLoggerProvider();
+        var exception = new HttpResponseException(new ErrorResponse(HttpStatusCode.ServiceUnavailable, ["ex-provider-down"]));
 
         await ExRunAsync(exception, logger: ExLogger(recorder));
 
-        var warning = Assert.Single(recorder.Warnings);
-        Assert.Equal(LogLevel.Warning, warning.Level);
-        Assert.Same(exception, warning.Exception);
-        Assert.Contains($"{ExRequestMethod} {ExRequestPath}", warning.Message);
-        Assert.Contains(nameof(ExceptionHandlingMiddleware), warning.Category);
+        var entry = Assert.Single(recorder.Entries);
+        Assert.Equal(LogLevel.Error, entry.Level);
+        Assert.Same(exception, entry.Exception);
+        Assert.Contains($"{ExRequestMethod} {ExRequestPath}", entry.Message);
+    }
+
+    // Teams that alert on client-error rates can raise the level back; the stack trace still stays out.
+    [Fact]
+    public async Task InvokeAsync_WithAConfiguredClientErrorLogLevel_LogsClientErrorsAtThatLevel()
+    {
+        var recorder = new RecordingLoggerProvider();
+        var options = new ExceptionHandlingOptions { ClientErrorLogLevel = LogLevel.Warning };
+
+        await ExRunAsync(new BadRequestException("ex-invalid"), logger: ExLogger(recorder), options: options);
+
+        var entry = Assert.Single(recorder.Entries);
+        Assert.Equal(LogLevel.Warning, entry.Level);
+        Assert.Null(entry.Exception);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -225,20 +261,20 @@ public sealed class ExceptionHandlingMiddlewareTests
         Assert.Equal(ExArabicMessage, ExFirstError(context));
     }
 
-    // Bad requests are the caller's fault, not the server's: a warning keeps them out of the error log
-    // while still leaving a trace of a client that is repeatedly sending garbage.
+    // Bad requests are the caller's fault, not the server's: logged like any other client error, so they stay out of
+    // the error log while still leaving a trace — with the framework's message — of a client sending garbage.
     [Fact]
-    public async Task InvokeAsync_BadHttpRequestException_LogsAWarningCarryingTheException()
+    public async Task InvokeAsync_BadHttpRequestException_LogsAClientErrorAtInformationWithoutTheStackTrace()
     {
         var recorder = new RecordingLoggerProvider();
-        var exception = new BadHttpRequestException("ex-malformed-json-body", 400);
 
-        await ExRunAsync(exception, logger: ExLogger(recorder));
+        await ExRunAsync(new BadHttpRequestException("ex-malformed-json-body", 400), logger: ExLogger(recorder));
 
-        var warning = Assert.Single(recorder.Warnings);
-        Assert.Equal(LogLevel.Warning, warning.Level);
-        Assert.Same(exception, warning.Exception);
-        Assert.Contains($"{ExRequestMethod} {ExRequestPath}", warning.Message);
+        var entry = Assert.Single(recorder.Entries);
+        Assert.Equal(LogLevel.Information, entry.Level);
+        Assert.Null(entry.Exception);
+        Assert.Contains($"{ExRequestMethod} {ExRequestPath}", entry.Message);
+        Assert.Contains("ex-malformed-json-body", entry.Message);
     }
 
     // The bound is the 4xx range, not "anything below 500". 499 is a real status (proxies use it for a
@@ -701,6 +737,35 @@ public sealed class ExceptionHandlingMiddlewareTests
         Assert.Equal(ExArabicUnicodeMessage, message);
     }
 
+    // The test above parses the body, and parsing turns ح back into the letter, so it passed while every
+    // client saw "حدث..." on the wire. Only the raw bytes show what the client really receives.
+    [Fact]
+    public async Task InvokeAsync_WithANonAsciiConfiguredMessage_WritesItUnescapedOnTheWire()
+    {
+        var configuration = ExConfiguration(new Dictionary<string, string?>
+        {
+            ["ErrorMessages:Ar"] = ExArabicUnicodeMessage
+        });
+
+        var context = await ExRunAsync(new InvalidOperationException("ex-boom"), configuration, "ar");
+        var body = ExBody(context);
+
+        Assert.Contains(ExArabicUnicodeMessage, body, StringComparison.Ordinal);
+        Assert.DoesNotContain("\\u06", body, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Letting non-Latin text through must not also let markup through: a message echoed from user input still
+    // has its HTML-significant characters escaped, so the body is safe even if something renders it as HTML.
+    [Fact]
+    public async Task InvokeAsync_DomainMessageWithMarkup_StillEscapesHtmlSignificantCharacters()
+    {
+        var context = await ExRunAsync(new NotFoundException("<script>x</script>"));
+        var body = ExBody(context);
+
+        Assert.DoesNotContain("<script>", body, StringComparison.Ordinal);
+        Assert.Equal("<script>x</script>", ExFirstError(context));
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Language selection for the unknown-error message.
     // ---------------------------------------------------------------------------------------------
@@ -1071,13 +1136,21 @@ public sealed class ExceptionHandlingMiddlewareTests
         Exception exception,
         IConfiguration? configuration = null,
         string? acceptLanguage = null,
-        ILogger<ExceptionHandlingMiddleware>? logger = null)
+        ILogger<ExceptionHandlingMiddleware>? logger = null,
+        ExceptionHandlingOptions? options = null)
     {
         var context = ExCreateContext(acceptLanguage);
-        var middleware = new ExceptionHandlingMiddleware(
-            _ => throw exception,
-            logger ?? NullLogger<ExceptionHandlingMiddleware>.Instance,
-            configuration ?? ExConfiguration());
+        // Without options, the three-argument constructor — the one existing callers use — so it stays covered.
+        var middleware = options is null
+            ? new ExceptionHandlingMiddleware(
+                _ => throw exception,
+                logger ?? NullLogger<ExceptionHandlingMiddleware>.Instance,
+                configuration ?? ExConfiguration())
+            : new ExceptionHandlingMiddleware(
+                _ => throw exception,
+                logger ?? NullLogger<ExceptionHandlingMiddleware>.Instance,
+                configuration ?? ExConfiguration(),
+                Options.Create(options));
 
         await middleware.InvokeAsync(context);
 

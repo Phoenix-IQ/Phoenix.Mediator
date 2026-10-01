@@ -207,7 +207,9 @@ public sealed class DiRegistrationTests
         using var scope = provider.CreateScope();
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
 
-        var exception = await Assert.ThrowsAsync<ArgumentNullException>(() => sender.Send<IRequest>(null!));
+        // Typed null: a bare null literal also converts to IRequest<IRequest>, which makes the call ambiguous with
+        // Send<TResponse>(IRequest<TResponse>). Real calls pass a typed request and bind as before.
+        var exception = await Assert.ThrowsAsync<ArgumentNullException>(() => sender.Send<IRequest>((IRequest)null!));
 
         Assert.Equal("request", exception.ParamName);
     }
@@ -247,7 +249,8 @@ public sealed class DiRegistrationTests
         using var scope = provider.CreateScope();
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
 
-        await sender.Send<DiNullProbeCommand>(null!);
+        // Typed null, for the reason given in Send_VoidOverload_ThrowsArgumentNullException_WhenTheStaticTypeIsTheRequestInterface.
+        await sender.Send<DiNullProbeCommand>((DiNullProbeCommand)null!);
 
         Assert.True(probe.CommandWasNull);
     }

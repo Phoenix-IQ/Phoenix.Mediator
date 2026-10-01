@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.Routing.Matching;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -46,7 +47,7 @@ public static class EndpointsExtensions
         if (options.MapHealthChecks)
             app.MapPhoenixHealthChecks(options.HealthCheckPattern);
 
-        MapEndpointGroups(app, assemblies);
+        MapEndpointGroups(app, options, assemblies);
         app.ValidateNoDuplicateEndpoints(options.DuplicateEndpointHandling);
         return app;
     }
@@ -71,7 +72,9 @@ public static class EndpointsExtensions
         if (handling == DuplicateEndpointHandling.None)
             return app;
 
-        var duplicates = DuplicateEndpointDetector.Find(((IEndpointRouteBuilder)app).DataSources);
+        var duplicates = DuplicateEndpointDetector.Find(
+            ((IEndpointRouteBuilder)app).DataSources,
+            app.Services.GetServices<MatcherPolicy>());
         if (duplicates.Count == 0)
             return app;
 
@@ -122,7 +125,7 @@ public static class EndpointsExtensions
         return app;
     }
 
-    private static void MapEndpointGroups(WebApplication app, Assembly[] assemblies)
+    private static void MapEndpointGroups(WebApplication app, MapEndpointsOptions options, Assembly[] assemblies)
     {
         var endpointGroupType = typeof(BaseEndpointGroup);
         var endpointGroupTypes = GetEndpointAssemblies(app, assemblies)
@@ -132,6 +135,11 @@ public static class EndpointsExtensions
             .Where(t => t.IsClass && !t.IsAbstract && !t.ContainsGenericParameters && endpointGroupType.IsAssignableFrom(t))
             .Distinct();
 
+        // Every group is mapped under this one route group, so the prefix and the shared conventions are set once and
+        // reach everything below it. Created on first use: an app whose groups all map on the application itself gets
+        // no extra group at all, and so exactly the endpoints it got before.
+        RouteGroupBuilder? root = null;
+
         foreach (var type in endpointGroupTypes)
         {
             // Dispose asynchronously: a synchronous scope Dispose throws when a resolved dependency only
@@ -140,13 +148,57 @@ public static class EndpointsExtensions
             try
             {
                 var instance = (BaseEndpointGroup)ActivatorUtilities.CreateInstance(scope.ServiceProvider, type);
-                instance.Map(app);
+
+                if (instance.UsesLegacyMap)
+                {
+                    // Mapped on the application itself, so the shared settings cannot reach it. Silently skipping
+                    // a shared RequireAuthorization() would leave this group's endpoints open.
+                    if (options.HasSharedEndpointSettings)
+                    {
+                        throw new InvalidOperationException(
+                            $"Endpoint group '{type.FullName}' overrides Map(WebApplication), which maps its endpoints on the application " +
+                            "itself, so MapEndpointsOptions.RoutePrefix and ConfigureEndpoints cannot apply to them. Override " +
+                            "Map(IEndpointRouteBuilder) instead; usually only the parameter type changes.");
+                    }
+
+                    instance.Map(app);
+                    continue;
+                }
+
+                root ??= CreateRootGroup(app, options);
+
+                var group = root.MapGroup(string.Empty);
+                if (options.TagEndpointsWithGroupName)
+                    TagUnlessTagged(group, instance.GroupName);
+
+                instance.Map(group);
             }
             finally
             {
                 scope.DisposeAsync().AsTask().GetAwaiter().GetResult();
             }
         }
+    }
+
+    private static RouteGroupBuilder CreateRootGroup(WebApplication app, MapEndpointsOptions options)
+    {
+        var root = app.MapGroup(options.NormalizedRoutePrefix);
+        options.ConfigureEndpoints?.Invoke(root);
+        return root;
+    }
+
+    /// <summary>
+    /// Tags every endpoint in <paramref name="group"/> with <paramref name="tag"/>, unless it already has tags of its own.
+    /// Tags add up rather than replace each other, so tagging unconditionally would list an endpoint that sets its own
+    /// under both. A finally convention runs after every other one, the endpoint's own included, so it sees them all.
+    /// </summary>
+    private static void TagUnlessTagged(RouteGroupBuilder group, string tag)
+    {
+        ((IEndpointConventionBuilder)group).Finally(endpoint =>
+        {
+            if (!endpoint.Metadata.OfType<ITagsMetadata>().Any())
+                endpoint.Metadata.Add(new TagsAttribute(tag));
+        });
     }
 
     private static IEnumerable<Assembly> GetEndpointAssemblies(WebApplication app, IReadOnlyCollection<Assembly> additionalAssemblies)

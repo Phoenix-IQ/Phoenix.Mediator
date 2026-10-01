@@ -298,8 +298,10 @@ public sealed class SenderApiTests
     {
         using var scope = new SendScope();
 
+        // Cast: without it the call now binds to Send<TResponse>(IRequest<TResponse>), which dispatches by runtime type
+        // as well (PolymorphicDispatchTests covers that one).
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => scope.Sender.Send(new SendDerivedRequest()));
+            () => scope.Sender.Send((object)new SendDerivedRequest()));
 
         Assert.Contains("IRequestHandler", exception.Message);
         Assert.Contains(nameof(SendDerivedRequest), exception.Message);

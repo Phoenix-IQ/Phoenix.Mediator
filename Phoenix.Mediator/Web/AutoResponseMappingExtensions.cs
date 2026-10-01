@@ -32,8 +32,10 @@ public static class AutoResponseMappingExtensions
         {
             null => CreateEmptyResponseResult(emptyResponseStatusCode),
             IResult result => result,
-            // Same body shape as the exception-handling middleware, trace id included.
-            ErrorResponse errors => Results.Json(new ErrorsResponse(errors.Errors, Activity.Current?.TraceId.ToString()), statusCode: (int)errors.HttpStatusCode),
+            // Same body shape as the exception-handling middleware, trace id and field errors included.
+            ErrorResponse errors => Results.Json(
+                new ErrorsResponse(errors.Errors, Activity.Current?.TraceId.ToString()) { FieldErrors = errors.FieldErrors },
+                statusCode: (int)errors.HttpStatusCode),
             // Always return JSON so Swagger/clients consistently get the documented content-type/schema.
             _ => Results.Json(value)
         };
@@ -54,6 +56,17 @@ public static class AutoResponseMappingExtensions
 
         // A null result means "no body", whether the request was void or its handler returned null. Both
         // honor the configured empty-response status, so the response matches what OpenAPI advertises.
+        return result.ToApiResult(GetConfiguredEmptyResponseStatusCode(sender));
+    }
+
+    /// <summary>
+    /// Overload for a request with a response, <typeparamref name="TResponse"/> inferred from the request:
+    /// <c>sender.SendAsApiResult(query, ct)</c> binds here rather than to the <see cref="object"/> overload, so the
+    /// response is not boxed on its way through the mediator.
+    /// </summary>
+    public static async Task<IResult> SendAsApiResult<TResponse>(this ISender sender, IRequest<TResponse> request, CancellationToken cancellationToken = default)
+    {
+        var result = await sender.Send(request, cancellationToken).ConfigureAwait(false);
         return result.ToApiResult(GetConfiguredEmptyResponseStatusCode(sender));
     }
 

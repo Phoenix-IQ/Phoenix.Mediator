@@ -1,0 +1,45 @@
+<Project>
+
+  <!-- Every project in the repository, the test project included: System.Text.Json and ASP.NET Core behave
+       differently across these, so the tests must run on exactly the TFMs that ship. -->
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- The shipped packages: everything except the test project. A project can still override any of these. -->
+  <PropertyGroup Condition="!$(MSBuildProjectName.EndsWith('.Tests'))">
+    <Authors>Phoenix-IQ</Authors>
+    <Company>Phoenix-IQ</Company>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/Phoenix-IQ/Phoenix.Mediator</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Phoenix-IQ/Phoenix.Mediator.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+
+    <!-- Deterministic builds + SourceLink. SourceLink ships inside the .NET 8+ SDK, so no package reference is needed. -->
+    <Deterministic>true</Deterministic>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+
+    <!-- Symbols -->
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+
+    <!-- Ship XML docs for documented members without failing on undocumented public APIs. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+
+    <!-- `dotnet pack` fails when a package's public API is no longer compatible with the last release: a removed or
+         changed member, or a new abstract member. Intentional breaks need a major version, and a suppression file.
+         Move the baseline to each new release after publishing it. -->
+    <EnablePackageValidation>true</EnablePackageValidation>
+    <PackageValidationBaselineVersion>2.2.0</PackageValidationBaselineVersion>
+  </PropertyGroup>
+
+  <ItemGroup Condition="!$(MSBuildProjectName.EndsWith('.Tests'))">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
+</Project>

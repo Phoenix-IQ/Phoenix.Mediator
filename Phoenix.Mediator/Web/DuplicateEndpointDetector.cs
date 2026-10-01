@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.Routing.Matching;
 using Microsoft.AspNetCore.Routing.Patterns;
 using System.Reflection;
 using System.Text;
@@ -17,8 +18,32 @@ internal static class DuplicateEndpointDetector
     /// <summary>Stands in for an endpoint mapped without an HTTP method constraint.</summary>
     internal const string AnyHttpMethod = "*";
 
-    public static IReadOnlyList<DuplicateEndpointGroup> Find(IEnumerable<EndpointDataSource> dataSources)
+    /// <summary>
+    /// Matcher policies whose job <see cref="GetMatchKey"/> and the per-method grouping already do. Asking them
+    /// would be wrong, not just redundant: every endpoint in a group shares the method, host and content type
+    /// these policies look at, yet they still report that they apply, which would hide every duplicate.
+    /// Two of them are internal, hence the names.
+    /// </summary>
+    private static readonly HashSet<string> PoliciesModeledByTheMatchKey = new(StringComparer.Ordinal)
     {
+        typeof(HttpMethodMatcherPolicy).FullName!,
+        typeof(HostMatcherPolicy).FullName!,
+        "Microsoft.AspNetCore.Routing.Matching.AcceptsMatcherPolicy",
+        "Microsoft.AspNetCore.Mvc.Routing.ConsumesMatcherPolicy",
+    };
+
+    /// <param name="dataSources">Where the endpoints come from.</param>
+    /// <param name="matcherPolicies">
+    /// The app's registered <see cref="MatcherPolicy"/> services. A group of same-route endpoints that one of
+    /// them says it applies to is left alone: that policy chooses between them per request, the way
+    /// Asp.Versioning's <c>ApiVersionMatcherPolicy</c> picks the endpoint for the requested API version.
+    /// </param>
+    public static IReadOnlyList<DuplicateEndpointGroup> Find(IEnumerable<EndpointDataSource> dataSources, IEnumerable<MatcherPolicy>? matcherPolicies = null)
+    {
+        var separatingPolicies = (matcherPolicies ?? [])
+            .Where(static policy => !PoliciesModeledByTheMatchKey.Contains(policy.GetType().FullName ?? string.Empty))
+            .ToArray();
+
         var candidates = dataSources
             .SelectMany(static dataSource => dataSource.Endpoints)
             .OfType<RouteEndpoint>()
@@ -53,6 +78,13 @@ internal static class DuplicateEndpointDetector
                 if (conflicting.Count(IsRouteHandler) < 2)
                     continue;
 
+                // Route handlers do this too. API versioning maps the same route and method once per
+                // version and lets its matcher policy pick one by the requested version, which is not
+                // ambiguous at all. Under the default Throw, reporting it stopped every versioned API
+                // from starting.
+                if (IsSeparatedByAMatcherPolicy(conflicting, separatingPolicies))
+                    continue;
+
                 duplicates.Add(new DuplicateEndpointGroup(
                     method.Key,
                     conflicting[0].RoutePattern.RawText ?? string.Empty,
@@ -83,6 +115,34 @@ internal static class DuplicateEndpointDetector
         return message
             .Append("Remove or rename the duplicates, or set MapEndpointsOptions.DuplicateEndpointHandling to Warn or None to allow them.")
             .ToString();
+    }
+
+    /// <summary>
+    /// Whether a matcher policy other than the ones the match key already models says it applies to these
+    /// endpoints, and so may choose between them per request. This only proves the endpoints might be told
+    /// apart, not that they always are; it errs towards not reporting, because a false report fails startup.
+    /// </summary>
+    private static bool IsSeparatedByAMatcherPolicy(RouteEndpoint[] endpoints, MatcherPolicy[] policies)
+    {
+        foreach (var policy in policies)
+        {
+            try
+            {
+                if (policy is INodeBuilderPolicy nodeBuilder && nodeBuilder.AppliesToEndpoints(endpoints))
+                    return true;
+
+                if (policy is IEndpointSelectorPolicy selector && selector.AppliesToEndpoints(endpoints))
+                    return true;
+            }
+            catch (Exception)
+            {
+                // A third-party policy that cannot cope with being asked about this subset gets the benefit
+                // of the doubt: the check must not be what stops the app from starting.
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static IReadOnlyList<string> GetHttpMethods(RouteEndpoint endpoint)

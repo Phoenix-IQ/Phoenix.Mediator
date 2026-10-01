@@ -1,8 +1,7 @@
 using FluentValidation;
+using FluentValidation.Results;
 using Phoenix.Mediator.Abstractions;
 using Phoenix.Mediator.Exceptions;
-using Phoenix.Mediator.Wrappers;
-using System.Net;
 
 namespace Phoenix.Mediator.Validation;
 
@@ -28,11 +27,11 @@ internal static class ValidationGuard
 {
     /// <summary>
     /// Runs every validator for the request and throws a 400 <see cref="HttpResponseException"/>
-    /// aggregating all failure messages. No-op when there are no validators or no failures.
+    /// aggregating all failure messages, also grouped by field. No-op when there are no validators or no failures.
     /// </summary>
     public static async Task EnsureValidAsync<TRequest>(IEnumerable<IValidator<TRequest>> validators, TRequest request, CancellationToken cancellationToken)
     {
-        List<string>? errors = null;
+        List<ValidationFailure>? failures = null;
 
         foreach (var validator in validators)
         {
@@ -40,11 +39,11 @@ internal static class ValidationGuard
             if (result.IsValid)
                 continue;
 
-            errors ??= [];
-            errors.AddRange(result.Errors.Select(static e => e.ErrorMessage));
+            failures ??= [];
+            failures.AddRange(result.Errors);
         }
 
-        if (errors is { Count: > 0 })
-            throw new HttpResponseException(new ErrorResponse(HttpStatusCode.BadRequest, errors));
+        if (failures is { Count: > 0 })
+            throw new HttpResponseException(ValidationErrors.ToErrorResponse(failures));
     }
 }

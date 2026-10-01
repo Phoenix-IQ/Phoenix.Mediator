@@ -20,6 +20,9 @@ public class HttpResponseException : Exception
     public HttpStatusCode HttpStatusCode => ErrorResponse.HttpStatusCode;
     public IReadOnlyList<string> Errors => ErrorResponse.Errors;
 
+    /// <inheritdoc cref="ErrorResponse.FieldErrors"/>
+    public IReadOnlyDictionary<string, string[]>? FieldErrors => ErrorResponse.FieldErrors;
+
     private static string BuildMessage(ErrorResponse errorResponse)
     {
         ArgumentNullException.ThrowIfNull(errorResponse);

@@ -30,3 +30,8 @@ jobs:
 
       - name: Test
         run: dotnet test Phoenix.Mediator.slnx -c Release --no-build --verbosity normal
+
+      # Packing runs package validation against the last release (see Directory.Build.props), so a change that breaks
+      # the public API fails here, on the pull request, rather than when the release tag is pushed.
+      - name: Pack
+        run: dotnet pack Phoenix.Mediator.slnx -c Release --no-build -o artifacts

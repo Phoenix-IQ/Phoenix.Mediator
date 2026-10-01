@@ -1,15 +1,31 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Phoenix.Mediator.Exceptions;
 using Phoenix.Mediator.Wrappers;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
+using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Unicode;
 
 namespace Phoenix.Mediator.Web.Middlewares;
 
-public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<ExceptionHandlingMiddleware> logger, IConfiguration configuration)
+/// <summary>
+/// Turns exceptions into the documented <c>{"errors": [...], "traceId": "..."}</c> error body. Configure it through
+/// <see cref="ExceptionHandlingOptions"/>.
+/// <para>
+/// This is Phoenix's own middleware rather than ASP.NET Core's <c>UseExceptionHandler()</c> with an
+/// <c>IExceptionHandler</c>, deliberately. On .NET 8 the framework middleware logs every exception at Error, stack
+/// trace included, before any handler runs, so every 404 and failed validation would land in the error log. And with
+/// the usual <c>UseRequestTimeouts()</c> before it, it answers a request timeout with 499 instead of the 504 the
+/// timeout middleware writes.
+/// </para>
+/// </summary>
+public sealed class ExceptionHandlingMiddleware
 {
     private const string ErrorMessagesSectionName = "ErrorMessages";
     private const string UnknownErrorMessage = "Unknown error occurred";
@@ -17,10 +33,42 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
     private static readonly string[] EnglishLanguageAliases = ["en", "En", "English"];
     private static readonly string[] ArabicLanguageAliases = ["ar", "Ar", "Arabic"];
 
+    private readonly RequestDelegate next;
+    private readonly ILogger<ExceptionHandlingMiddleware> logger;
+    private readonly ExceptionHandlingOptions options;
+
     // Snapshot configuration once at construction. The middleware instance is created a single
     // time for the app lifetime, so there is no need to re-read/re-allocate this on every error.
-    private readonly Dictionary<string, string> errorMessages = BuildErrorMessages(configuration);
-    private readonly IReadOnlyList<string> defaultLanguageCandidates = BuildDefaultLanguageCandidates(configuration);
+    private readonly Dictionary<string, string> errorMessages;
+    private readonly IReadOnlyList<string> defaultLanguageCandidates;
+
+    /// <summary>Creates the middleware with the app's <see cref="ExceptionHandlingOptions"/>, read once.</summary>
+    /// <remarks>
+    /// Declared before the three-argument constructor on purpose. ASP.NET Core 8's <c>UseMiddleware</c> takes the first
+    /// declared constructor it can satisfy and ignores <see cref="ActivatorUtilitiesConstructorAttribute"/> (.NET 10
+    /// honors it), so with the order swapped every configured mapping was silently dropped on .NET 8.
+    /// </remarks>
+    [ActivatorUtilitiesConstructor]
+    public ExceptionHandlingMiddleware(
+        RequestDelegate next,
+        ILogger<ExceptionHandlingMiddleware> logger,
+        IConfiguration configuration,
+        IOptions<ExceptionHandlingOptions> options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        this.next = next;
+        this.logger = logger;
+        this.options = options.Value;
+        errorMessages = BuildErrorMessages(configuration);
+        defaultLanguageCandidates = BuildDefaultLanguageCandidates(configuration);
+    }
+
+    /// <summary>Creates the middleware with the default <see cref="ExceptionHandlingOptions"/>.</summary>
+    public ExceptionHandlingMiddleware(RequestDelegate next, ILogger<ExceptionHandlingMiddleware> logger, IConfiguration configuration)
+        : this(next, logger, configuration, Options.Create(new ExceptionHandlingOptions()))
+    {
+    }
 
     public async Task InvokeAsync(HttpContext context)
     {
@@ -44,13 +92,9 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
         {
             await HandleBadHttpRequestException(context, ex);
         }
-        catch (UnauthorizedAccessException ex)
-        {
-            await HandleUnauthorizedException(context, ex);
-        }
         catch (Exception ex)
         {
-            await HandleUnhandledException(context, ex);
+            await HandleOtherException(context, ex);
         }
     }
 
@@ -62,34 +106,107 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
     /// </summary>
     private async Task HandleBadHttpRequestException(HttpContext context, BadHttpRequestException exception)
     {
-        logger.LogWarning(exception,
-            "Bad request for {Method} {Path}",
-            context.Request.Method,
-            context.Request.Path);
+        // A 4xx message describes what was wrong with the request itself, so it is useful to the caller.
+        // Anything else stays generic.
+        IReadOnlyList<string> errors = exception.StatusCode is >= 400 and < 500
+            ? [exception.Message]
+            : [GetUnknownErrorMessage(context)];
+
+        LogFailure(context, exception, exception.StatusCode, errors);
 
         if (!TryResetResponse(context, exception))
             return;
 
-        // A 4xx message describes what was wrong with the request itself, so it is useful to the caller.
-        // Anything else stays generic.
-        var message = exception.StatusCode is >= 400 and < 500
-            ? exception.Message
-            : GetUnknownErrorMessage(context);
-
-        await WriteErrorsAsync(context, exception.StatusCode, [message]);
+        await WriteErrorsAsync(context, exception.StatusCode, errors);
     }
 
     private async Task HandleHttpResponseException(HttpContext context, HttpResponseException exception)
     {
-        logger.LogWarning(exception,
-            "HttpResponseException occurred for {Method} {Path}",
-            context.Request.Method,
-            context.Request.Path);
+        var statusCode = (int)exception.HttpStatusCode;
+
+        LogFailure(context, exception, statusCode, exception.Errors);
 
         if (!TryResetResponse(context, exception))
             return;
 
-        await WriteErrorsAsync(context, (int)exception.HttpStatusCode, exception.Errors);
+        await WriteErrorsAsync(context, statusCode, exception.Errors, exception.FieldErrors);
+    }
+
+    /// <summary>
+    /// Everything that is not already an error response: the app's <see cref="ExceptionHandlingOptions"/> mappings first,
+    /// then the common-exception mappings kept for compatibility, then a 500.
+    /// </summary>
+    private async Task HandleOtherException(HttpContext context, Exception exception)
+    {
+        if (TryMapException(exception, out var mapped, out var useGenericMessage))
+        {
+            var statusCode = (int)mapped.HttpStatusCode;
+            IReadOnlyList<string> errors = useGenericMessage ? [GetUnknownErrorMessage(context)] : mapped.Errors;
+
+            LogFailure(context, exception, statusCode, errors);
+
+            if (!TryResetResponse(context, exception))
+                return;
+
+            await WriteErrorsAsync(context, statusCode, errors, mapped.FieldErrors);
+            return;
+        }
+
+        if (options.MapCommonExceptions && exception is UnauthorizedAccessException)
+        {
+            await HandleUnauthorizedException(context, exception);
+            return;
+        }
+
+        await HandleUnhandledException(context, exception);
+    }
+
+    private bool TryMapException(Exception exception, [NotNullWhen(true)] out ErrorResponse? response, out bool useGenericMessage)
+    {
+        try
+        {
+            return options.TryMap(exception, out response, out useGenericMessage);
+        }
+        catch (Exception mappingFailure)
+        {
+            // A mapping that throws must not replace the error the request actually hit; that one still gets reported,
+            // as an unhandled exception.
+            logger.LogError(mappingFailure,
+                "The ExceptionHandlingOptions mapping for {ExceptionType} threw; handling the original exception without it",
+                exception.GetType().FullName);
+
+            response = null;
+            useGenericMessage = false;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Logs an exception that became an error response. A client error (4xx) is the caller's doing, so it is logged at
+    /// <see cref="ExceptionHandlingOptions.ClientErrorLogLevel"/> without the exception: a stack trace per 404 or failed
+    /// validation filled the exception logs and buried the real failures. A server error keeps its stack trace at Error.
+    /// </summary>
+    private void LogFailure(HttpContext context, Exception exception, int statusCode, IReadOnlyList<string> errors)
+    {
+        if (statusCode is >= 400 and < 500)
+        {
+            logger.Log(options.ClientErrorLogLevel,
+                "{ExceptionType} for {Method} {Path}; responding {StatusCode}: {Errors}",
+                exception.GetType().Name,
+                context.Request.Method,
+                context.Request.Path,
+                statusCode,
+                errors);
+
+            return;
+        }
+
+        logger.LogError(exception,
+            "{ExceptionType} for {Method} {Path}; responding {StatusCode}",
+            exception.GetType().Name,
+            context.Request.Method,
+            context.Request.Path,
+            statusCode);
     }
 
     private Task HandleUnauthorizedException(HttpContext context, Exception exception)
@@ -112,12 +229,14 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
 
     private async Task HandleUnhandledException(HttpContext context, Exception exception)
     {
-        var statusCode = exception switch
-        {
-            KeyNotFoundException => HttpStatusCode.NotFound,
-            ArgumentException => HttpStatusCode.BadRequest,
-            _ => HttpStatusCode.InternalServerError
-        };
+        var statusCode = options.MapCommonExceptions
+            ? exception switch
+            {
+                KeyNotFoundException => HttpStatusCode.NotFound,
+                ArgumentException => HttpStatusCode.BadRequest,
+                _ => HttpStatusCode.InternalServerError
+            }
+            : HttpStatusCode.InternalServerError;
 
         logger.LogError(exception,
             "Unhandled exception for {Method} {Path}",
@@ -136,18 +255,24 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
     /// type once per arm, next to a fourth copy in the endpoint helpers' <c>Produces&lt;ErrorsResponse&gt;</c>
     /// metadata, which is the sort of drift a client only finds in production.
     /// </summary>
-    private async Task WriteErrorsAsync(HttpContext context, int statusCode, IReadOnlyList<string> errors)
+    private async Task WriteErrorsAsync(HttpContext context, int statusCode, IReadOnlyList<string> errors, IReadOnlyDictionary<string, string[]>? fieldErrors = null)
     {
         context.Response.ContentType = "application/json";
         context.Response.StatusCode = statusCode;
 
         await context.Response.WriteAsync(
-            JsonSerializer.Serialize(new ErrorsResponse(errors, GetTraceId(context)), ErrorBodyJsonOptions));
+            JsonSerializer.Serialize(new ErrorsResponse(errors, GetTraceId(context)) { FieldErrors = fieldErrors }, ErrorBodyJsonOptions));
     }
 
     // The anonymous types this replaced spelled their members in camelCase literally. ErrorsResponse names
     // them in PascalCase, so the camelCase policy is what keeps the body byte-identical for existing clients.
-    private static readonly JsonSerializerOptions ErrorBodyJsonOptions = new(JsonSerializerDefaults.Web);
+    // The default encoder only lets Basic Latin through, so the configured Arabic message reached the wire as
+    // حدث...: valid JSON, but unreadable in logs, curl and Postman. Allowing every BMP range writes
+    // it as UTF-8 while still escaping the HTML-significant characters (<, >, &, ', ").
+    private static readonly JsonSerializerOptions ErrorBodyJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        Encoder = JavaScriptEncoder.Create(UnicodeRanges.All)
+    };
 
     private static string GetTraceId(HttpContext context)
         => Activity.Current?.TraceId.ToString() ?? context.TraceIdentifier;

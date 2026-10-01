@@ -2,7 +2,9 @@ using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Phoenix.Mediator.Abstractions;
+using Phoenix.Mediator.Web;
 using System.Reflection;
 
 namespace Phoenix.Mediator.Validation;
@@ -33,6 +35,8 @@ public static class ValidationServiceCollectionExtensions
         services.TryAddEnumerable(ServiceDescriptor.Transient(typeof(IPipelineBehavior<>), typeof(ValidationBehavior<>)));
         // Deduplicated by implementation type, so repeated AddMediatorValidation calls report once.
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, ValidatorRegistrationDiagnostics>());
+        // A handler calling ValidateAndThrowAsync itself gets the same 400 body as the behavior, instead of a 500.
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IConfigureOptions<ExceptionHandlingOptions>, ValidationExceptionMapping>());
 
         var registry = GetOrCreateRegistry(services);
 
