@@ -722,7 +722,7 @@ public sealed class PerformanceTests(ITestOutputHelper output)
         await middleware.InvokeAsync(context);
 
         Assert.Equal(StatusCodes.Status500InternalServerError, context.Response.StatusCode);
-        Assert.Equal("application/json", context.Response.ContentType);
+        Assert.Equal("application/json; charset=utf-8", context.Response.ContentType);
 
         body.Position = 0;
         using var document = JsonDocument.Parse(body);

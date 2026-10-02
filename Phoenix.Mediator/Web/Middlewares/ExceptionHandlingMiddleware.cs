@@ -10,7 +10,6 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Encodings.Web;
 using System.Text.Json;
-using System.Text.Unicode;
 
 namespace Phoenix.Mediator.Web.Middlewares;
 
@@ -232,7 +231,7 @@ public sealed class ExceptionHandlingMiddleware
     /// </summary>
     private async Task WriteErrorsAsync(HttpContext context, int statusCode, IReadOnlyList<string> errors)
     {
-        context.Response.ContentType = "application/json";
+        context.Response.ContentType = "application/json; charset=utf-8";
         context.Response.StatusCode = statusCode;
 
         await context.Response.WriteAsync(
@@ -241,12 +240,13 @@ public sealed class ExceptionHandlingMiddleware
 
     // The anonymous types this replaced spelled their members in camelCase literally. ErrorsResponse names
     // them in PascalCase, so the camelCase policy is what keeps the body byte-identical for existing clients.
-    // The default encoder only lets Basic Latin through, so the configured Arabic message reached the wire as
-    // حدث...: valid JSON, but unreadable in logs, curl and Postman. Allowing every BMP range writes
-    // it as UTF-8 while still escaping the HTML-significant characters (<, >, &, ', ").
+    // The encoder and the charset above are what ASP.NET Core writes its own JSON responses with, a returned
+    // ErrorResponse (Results.Json) included, so a thrown error reads the same: Arabic as UTF-8, a quote as \"
+    // rather than \u0022. Microsoft documents this encoder, which leaves <, > and & unescaped, for responses
+    // that declare charset=utf-8.
     private static readonly JsonSerializerOptions ErrorBodyJsonOptions = new(JsonSerializerDefaults.Web)
     {
-        Encoder = JavaScriptEncoder.Create(UnicodeRanges.All)
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
     private static string GetTraceId(HttpContext context)

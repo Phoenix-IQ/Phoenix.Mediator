@@ -91,7 +91,7 @@ public sealed class ExceptionHandlingMiddlewareTests
         var context = await ExRunAsync(new HttpResponseException(new ErrorResponse(configuredStatusCode, ["ex-error"])));
 
         Assert.Equal(expectedStatusCode, context.Response.StatusCode);
-        Assert.Equal("application/json", context.Response.ContentType);
+        Assert.Equal("application/json; charset=utf-8", context.Response.ContentType);
         Assert.Equal("ex-error", ExFirstError(context));
     }
 
@@ -103,7 +103,7 @@ public sealed class ExceptionHandlingMiddlewareTests
         var context = await ExRunAsync(new NotFoundException("Order 42 was not found."));
 
         Assert.Equal(StatusCodes.Status404NotFound, context.Response.StatusCode);
-        Assert.Equal("application/json", context.Response.ContentType);
+        Assert.Equal("application/json; charset=utf-8", context.Response.ContentType);
         Assert.Equal("Order 42 was not found.", Assert.Single(ExErrors(context)));
     }
 
@@ -113,7 +113,7 @@ public sealed class ExceptionHandlingMiddlewareTests
         var context = await ExRunAsync(new BadRequestException("Quantity must be greater than zero."));
 
         Assert.Equal(StatusCodes.Status400BadRequest, context.Response.StatusCode);
-        Assert.Equal("application/json", context.Response.ContentType);
+        Assert.Equal("application/json; charset=utf-8", context.Response.ContentType);
         Assert.Equal("Quantity must be greater than zero.", Assert.Single(ExErrors(context)));
     }
 
@@ -222,7 +222,7 @@ public sealed class ExceptionHandlingMiddlewareTests
         var context = await ExRunAsync(new BadHttpRequestException(message, statusCode));
 
         Assert.Equal(statusCode, context.Response.StatusCode);
-        Assert.Equal("application/json", context.Response.ContentType);
+        Assert.Equal("application/json; charset=utf-8", context.Response.ContentType);
         Assert.Equal(message, Assert.Single(ExErrors(context)));
         Assert.False(string.IsNullOrWhiteSpace(ExTraceId(context)));
     }
@@ -569,7 +569,7 @@ public sealed class ExceptionHandlingMiddlewareTests
         var context = await ExRunAsync(ExCreateException(exceptionKind));
 
         Assert.Equal(StatusCodes.Status500InternalServerError, context.Response.StatusCode);
-        Assert.Equal("application/json", context.Response.ContentType);
+        Assert.Equal("application/json; charset=utf-8", context.Response.ContentType);
         Assert.Equal(ExBuiltInUnknownMessage, Assert.Single(ExErrors(context)));
     }
 
@@ -641,7 +641,7 @@ public sealed class ExceptionHandlingMiddlewareTests
         await middleware.InvokeAsync(context);
 
         Assert.Equal(StatusCodes.Status404NotFound, context.Response.StatusCode);
-        Assert.Equal("application/json", context.Response.ContentType);
+        Assert.Equal("application/json; charset=utf-8", context.Response.ContentType);
         Assert.False(context.Response.Headers.ContainsKey("X-Ex-Handler"));
     }
 
@@ -786,8 +786,8 @@ public sealed class ExceptionHandlingMiddlewareTests
         Assert.Equal(ExArabicUnicodeMessage, message);
     }
 
-    // The test above parses the body, and parsing turns ح back into the letter, so it passed while every
-    // client saw "حدث..." on the wire. Only the raw bytes show what the client really receives.
+    // The test above parses the body, and parsing turns \u062D back into the letter, so it passed while every
+    // client saw "\u062D\u062F\u062B..." on the wire. Only the raw bytes show what the client really receives.
     [Fact]
     public async Task InvokeAsync_WithANonAsciiConfiguredMessage_WritesItUnescapedOnTheWire()
     {
@@ -803,16 +803,36 @@ public sealed class ExceptionHandlingMiddlewareTests
         Assert.DoesNotContain("\\u06", body, StringComparison.OrdinalIgnoreCase);
     }
 
-    // Letting non-Latin text through must not also let markup through: a message echoed from user input still
-    // has its HTML-significant characters escaped, so the body is safe even if something renders it as HTML.
+    // The framework's binding messages quote the parameter, and the strict encoder this used to have wrote each quote
+    // as \u0022: valid JSON, but hard to read in Postman, curl and the logs. Parsing turns either spelling back into a
+    // quote, so only the raw body shows the difference.
     [Fact]
-    public async Task InvokeAsync_DomainMessageWithMarkup_StillEscapesHtmlSignificantCharacters()
+    public async Task InvokeAsync_FrameworkMessageWithQuotes_WritesThemAsBackslashEscapesOnTheWire()
     {
-        var context = await ExRunAsync(new NotFoundException("<script>x</script>"));
+        var context = await ExRunAsync(
+            new BadHttpRequestException("Required parameter \"int PageNum\" was not provided from query string."));
         var body = ExBody(context);
 
-        Assert.DoesNotContain("<script>", body, StringComparison.Ordinal);
-        Assert.Equal("<script>x</script>", ExFirstError(context));
+        Assert.Contains("Required parameter \\\"int PageNum\\\" was not provided", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("\\u0022", body, StringComparison.Ordinal);
+    }
+
+    // A returned ErrorResponse reaches the wire through Results.Json, which uses ASP.NET Core's JSON defaults. A thrown
+    // one has to be written the same way, or the same error reads differently depending on whether the handler threw
+    // it or returned it. The message carries every character the strict encoder escaped and the framework does not.
+    [Fact]
+    public async Task InvokeAsync_ErrorBody_IsWrittenTheWayAspNetCoreWritesItsOwnJson()
+    {
+        using var noActivity = new ExNoAmbientActivityScope();
+        const string message = "Order \"42\" <b>R&D</b> isn't 1+1 " + ExArabicUnicodeMessage;
+
+        var context = await ExRunAsync(new NotFoundException(message));
+
+        var frameworkJsonOptions = new Microsoft.AspNetCore.Http.Json.JsonOptions().SerializerOptions;
+        Assert.Equal(
+            JsonSerializer.Serialize(new ErrorsResponse([message], ExTraceIdentifierValue), frameworkJsonOptions),
+            ExBody(context));
+        Assert.Equal("application/json; charset=utf-8", context.Response.ContentType);
     }
 
     // ---------------------------------------------------------------------------------------------

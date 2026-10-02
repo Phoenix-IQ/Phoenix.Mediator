@@ -1067,7 +1067,7 @@ public sealed class ValidationBehaviorTests
         await middleware.InvokeAsync(context);
 
         Assert.Equal(400, context.Response.StatusCode);
-        Assert.Equal("application/json", context.Response.ContentType);
+        Assert.Equal("application/json; charset=utf-8", context.Response.ContentType);
 
         context.Response.Body.Position = 0;
         using var document = await JsonDocument.ParseAsync(context.Response.Body);

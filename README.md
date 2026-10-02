@@ -606,6 +606,21 @@ Notes:
 
 ## Upgrading
 
+### 3.0.2
+
+- **Errors from the exception-handling middleware are written the way ASP.NET Core writes JSON**, as a returned
+  `ErrorResponse` already was, so an error reads the same whether the handler threw it or returned it. The
+  `Content-Type` is `application/json; charset=utf-8` (it was `application/json`), a quote is written as `\"` instead of
+  `\u0022`, and `<`, `>`, `&`, `'` and `+` are no longer escaped. A client that parses the body reads the same
+  strings; only code that compares the raw text or the exact header value sees a difference.
+
+### 3.0.1
+
+- **`ExceptionHandlingOptions.MapCommonExceptions` is removed** — a breaking change, made in a patch release while 3.0.0
+  is new. Code that sets it no longer compiles: delete the line. An app that set it to `true` now gets `500` for
+  `ArgumentException`, `KeyNotFoundException` and `UnauthorizedAccessException`, like any other exception nothing maps:
+  where a handler means `400`, `401`, `403` or `404`, throw the exceptions the 3.0.0 note lists.
+
 ### 3.0.0
 
 - **Endpoints return what `sender.Send(...)` returns; `SendAsApiResult` and `ToApiResult` are removed** — a breaking
@@ -640,12 +655,12 @@ Notes:
   sits outside it, reported every disconnect as an unhandled error. A request timeout is still rethrown, so
   `UseRequestTimeouts` writes its `504`. Only `UseRequestTimeouts` is told apart from a disconnect: a timeout
   middleware of your own that cancels `RequestAborted` now sees the request end with `499` instead of the exception.
-- **`ArgumentException`, `KeyNotFoundException` and `UnauthorizedAccessException` are `500`s**, logged at `Error` like
-  any other exception nothing maps, and `ExceptionHandlingOptions.MapCommonExceptions` is removed. They used to be
-  `400`, `404` and `401`, which told the caller they had sent a bad request when the cause was usually a server-side bug,
-  and kept the failure out of 5xx monitoring. Where a handler means one of those statuses, throw `BadRequestException`,
-  `NotFoundException`, `UnauthorizedException` (not signed in) or `ForbiddenException` (signed in but not allowed). Code
-  that sets `MapCommonExceptions` no longer compiles: delete the line.
+- **`ArgumentException`, `KeyNotFoundException` and `UnauthorizedAccessException` are `500`s by default**, logged at
+  `Error`: `ExceptionHandlingOptions.MapCommonExceptions` now defaults to `false`. They used to be `400`, `404` and
+  `401`, which told the caller they had sent a bad request when the cause was usually a server-side bug, and kept the
+  failure out of 5xx monitoring. Where a handler means one of those statuses, throw `BadRequestException`,
+  `NotFoundException`, `UnauthorizedException` (not signed in) or `ForbiddenException` (signed in but not allowed).
+  `MapCommonExceptions = true` kept the old mapping until 3.0.1 removed the option.
 
 ### 2.4.0
 
