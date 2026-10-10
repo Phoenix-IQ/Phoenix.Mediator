@@ -252,6 +252,8 @@ does.
 
 - `HttpResponseException` (or derived exceptions): returns `{"errors":[...]}` with mapped status code
 - An exception you mapped: the status you mapped it to (see [Mapping your own exceptions](#mapping-your-own-exceptions))
+- A request ASP.NET Core can't bind, such as one with a missing or malformed JSON body: its status (`400`, `415`) with
+  ASP.NET Core's message (see [Requests that fail to bind](#requests-that-fail-to-bind))
 - Unhandled exceptions: returns `500` with the configured unknown-error message
 - A request the client abandoned: ends with `499`, logged at `Debug`. A request timeout is rethrown instead, so
   `UseRequestTimeouts` writes its `504`
@@ -306,6 +308,33 @@ builder.Services.Configure<ExceptionHandlingOptions>(options => options
 `ArgumentException`, `KeyNotFoundException` and `UnauthorizedAccessException` are `500`s too: they are usually
 server-side bugs rather than bad requests. Where you mean `400`, `401`, `403` or `404`, throw `BadRequestException`,
 `UnauthorizedException`, `ForbiddenException` or `NotFoundException`.
+
+### Requests that fail to bind
+
+ASP.NET Core rejects a request it can't bind before the handler runs: a JSON body that is missing, `null` or malformed,
+a body that isn't JSON, or a route or query value that doesn't parse, such as `not-a-guid` for a `Guid`. On its own it
+throws for these only in Development and answers with a bare status code everywhere else. `AddMediator` turns on
+`RouteHandlerOptions.ThrowOnBadRequest` in every environment, so the exception-handling middleware answers with ASP.NET
+Core's status (`400`, or `415` for a body that isn't JSON) and the error body:
+
+```json
+{
+  "errors": ["Failed to bind parameter \"Guid id\" from \"not-a-guid\"."],
+  "traceId": "0af7651916cd43dd8448eb211c80319c"
+}
+```
+
+This covers every Minimal API endpoint in the app, not only the ones the helpers map, and it relies on that
+middleware. Without it, Kestrel still answers with the status code, but logs each bad request as an unhandled
+exception, at `Error`. An app that handles exceptions another way can restore ASP.NET Core's default by configuring the
+option after `AddMediator` (the later configuration wins):
+
+```csharp
+builder.Services.AddMediator(assembly);
+builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = builder.Environment.IsDevelopment());
+```
+
+Where the option is off, such a request gets ASP.NET Core's bare status code, never the empty-response status.
 
 ### Logging
 
@@ -605,6 +634,22 @@ Notes:
 - Minimum levels set in `configureSinks` are applied after the section, so they take precedence.
 
 ## Upgrading
+
+### 3.0.3
+
+- **A request that fails to bind gets its `4xx` and the error body in every environment.** In 3.0.0 to 3.0.2, outside
+  Development, an endpoint mapped with the helpers answered a request whose JSON body was missing or `null`, or whose
+  route or query value didn't parse (`not-a-guid` for a `Guid`, `pageNum=abc`), with the configured empty status: `200`
+  or `204`, and no body. The handler never ran, so the client was told that a request nobody handled had succeeded.
+  Such a request now gets `400` and `{"errors":[...],"traceId":"..."}`, as it already did in Development, and so do
+  requests with a malformed JSON body or a body that isn't JSON, which got a bare `400` or `415`. `AddMediator` does this
+  by turning on `RouteHandlerOptions.ThrowOnBadRequest` in every environment, so it covers every Minimal API endpoint in
+  the app, and a `Configure<RouteHandlerOptions>` line that sets it to work around this can go. The exception-handling
+  middleware logs each one at `ClientErrorLogLevel` (`Information`); ASP.NET Core logged them at `Debug`. An app that
+  doesn't use the middleware should restore ASP.NET Core's default: see
+  [Requests that fail to bind](#requests-that-fail-to-bind).
+- **An endpoint that sets an error status itself and returns nothing keeps that status.** The helpers used to answer
+  it with the configured empty status.
 
 ### 3.0.2
 

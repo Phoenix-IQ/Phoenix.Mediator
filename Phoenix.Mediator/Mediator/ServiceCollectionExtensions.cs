@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http.Json;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -39,6 +40,9 @@ public static class ServiceCollectionExtensions
         services.AddHealthChecks();
         // Keeps [FromRoute]/[FromQuery]/[FromHeader] request members out of the Minimal API JSON body and its OpenAPI schema.
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IPostConfigureOptions<JsonOptions>, RequestBodyJsonOptionsSetup>());
+        // A request that fails to bind throws in every environment, not only in Development, so the exception middleware
+        // answers it with the error body instead of ASP.NET Core's bare 400/415.
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IConfigureOptions<RouteHandlerOptions>, RouteHandlerOptionsSetup>());
         services.GetOrCreateAssemblyRegistry();
         // IMPORTANT: Mediator must be scoped so request handlers can depend on scoped services
         // (e.g. current user, DbContext, HttpContext-related services).

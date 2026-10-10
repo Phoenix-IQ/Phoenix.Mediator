@@ -279,7 +279,8 @@ public static class EndpointsExtensions
     /// and answer with the responses its OpenAPI metadata describes: no result (a void request, or a handler returning
     /// <see langword="null"/>) is the configured empty status, an <see cref="ErrorResponse"/> is its status with the error
     /// body, and anything else is 200 with a JSON body, as <see cref="AutoResponseMappingExtensions.ToApiResult(object?, EmptyResponseStatusCode)"/>
-    /// maps them. A delegate that returns an <see cref="IResult"/> itself is left alone.
+    /// maps them. A delegate that returns an <see cref="IResult"/> itself is left alone, and no result never replaces an
+    /// error status already on the response.
     /// </summary>
     private static void MapResultToApiResult(this RouteHandlerBuilder handler, Delegate endpointHandler, EmptyResponseStatusCode emptyResponseStatusCode)
     {
@@ -291,7 +292,17 @@ public static class EndpointsExtensions
             var result = await next(context).ConfigureAwait(false);
 
             // A delegate returning void or Task hands its filters EmptyHttpResult: no result, like a handler returning null.
-            return (result is EmptyHttpResult ? null : result).ToApiResult(emptyResponseStatusCode);
+            if (result is EmptyHttpResult)
+                result = null;
+
+            // No result on a response that already carries an error status keeps that status. A parameter that failed to
+            // bind arrives this way when RouteHandlerOptions.ThrowOnBadRequest is off: ASP.NET Core sets 400, still runs the
+            // filters and skips only the delegate, so the empty status would tell the client a request nobody handled
+            // succeeded.
+            if (result is null && context.HttpContext.Response.StatusCode >= StatusCodes.Status400BadRequest)
+                return EmptyHttpResult.Instance;
+
+            return result.ToApiResult(emptyResponseStatusCode);
         });
     }
 
