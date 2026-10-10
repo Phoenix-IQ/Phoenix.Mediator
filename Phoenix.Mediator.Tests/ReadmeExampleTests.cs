@@ -1113,6 +1113,50 @@ public sealed class ReadmeExampleTests
         Assert.Equal(HttpStatusCode.InternalServerError, (await client.GetAsync("readme-errors/argument")).StatusCode);
     }
 
+    // "### Requests that fail to bind": the README's example body, in Production, from an endpoint the helpers map and from
+    // one mapped with ASP.NET Core's own MapGet ("This covers every Minimal API endpoint in the app").
+    [Theory]
+    [InlineData("readme-errors/students/not-a-guid")]
+    [InlineData("readme-errors/raw/not-a-guid")]
+    public async Task RequestThatFailsToBind_GetsTheReadmeErrorBody(string path)
+    {
+        await using var app = await StartErrorReadmeAppAsync(configure: null);
+        using var client = app.GetTestClient();
+
+        var response = await client.GetAsync(path);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = JsonBody(await response.Content.ReadAsStringAsync());
+        Assert.Equal("Failed to bind parameter \"Guid id\" from \"not-a-guid\".", Assert.Single(body.GetProperty("errors").EnumerateArray()).GetString());
+        Assert.False(string.IsNullOrWhiteSpace(body.GetProperty("traceId").GetString()));
+    }
+
+    // The README's snippet for an app that handles exceptions another way: ASP.NET Core's own default back, configured
+    // after AddMediator. It throws only in Development again, and either way the request is not answered with a success:
+    // Production gets the bare 400, Development the framework's exception page with the same status.
+    [Theory]
+    [InlineData("Production", false)]
+    [InlineData("Development", true)]
+    public async Task RequestThatFailsToBind_WithAspNetCoresDefaultRestored_ThrowsOnlyInDevelopment(string environment, bool throwsOnBadRequest)
+    {
+        var builder = TestApps.CreateBuilder(environment);
+        builder.WebHost.UseTestServer();
+        var assembly = ReadmeGreetingAssembly();
+
+        builder.Services.AddMediator(assembly);
+        builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = builder.Environment.IsDevelopment());
+
+        await using var app = builder.Build();
+        app.MapGroup("readme-restored").Get("students/{id}", static (Guid id) => new SingleResponse<Guid>(id));
+        await app.StartAsync();
+        using var client = app.GetTestClient();
+
+        var response = await client.GetAsync("readme-restored/students/not-a-guid");
+
+        Assert.Equal(throwsOnBadRequest, app.Services.GetRequiredService<IOptions<RouteHandlerOptions>>().Value.ThrowOnBadRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
     // "Client errors (4xx) are logged at Information, without the stack trace ... Server errors (5xx) are logged at
     // Error, with the exception."
     [Fact]
@@ -1932,6 +1976,38 @@ public sealed class ReadmeExampleTests
     }
 
     // ---------------------------------------------------------------------------------------------
+    // README "Upgrading / 3.0.3"
+    // ---------------------------------------------------------------------------------------------
+
+    // "A request that fails to bind gets its 4xx and the error body in every environment ... The exception-handling
+    // middleware logs each one at ClientErrorLogLevel (Information)". With EmptyResponseStatusCode.Ok, 3.0.2 answered this
+    // request 200 with no body: what the command answers when it succeeds. Depth: BadRequestTests.
+    [Fact]
+    public async Task Upgrade_ARequestThatFailsToBindGetsTheErrorBodyAndIsLoggedAtInformation()
+    {
+        var logs = new RecordingLoggerProvider();
+        var builder = CreateReadmeBuilder(options => options.EmptyResponseStatusCode = EmptyResponseStatusCode.Ok, logs, useTestServer: true);
+        await using var app = builder.Build();
+
+        app.UsePhoenixExceptionHandling();
+        app.MapGroup("readme-upgrade").Post("complete", (ISender sender, ReadmeCompleteCommand command, CancellationToken ct) =>
+            sender.Send(command, ct));
+
+        await app.StartAsync();
+        using var client = app.GetTestClient();
+
+        var response = await client.PostAsync("readme-upgrade/complete", new ByteArrayContent([]));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = JsonBody(await response.Content.ReadAsStringAsync());
+        Assert.Equal(new[] { "errors", "traceId" }, body.EnumerateObject().Select(static member => member.Name).Order(StringComparer.Ordinal));
+        Assert.Contains(logs.Entries, static entry => entry.Category == typeof(ExceptionHandlingMiddleware).FullName
+            && entry.Level == LogLevel.Information
+            && entry.Exception is null
+            && entry.Message.StartsWith(nameof(BadHttpRequestException), StringComparison.Ordinal));
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // README "Upgrading / 2.3.0"
     // ---------------------------------------------------------------------------------------------
 
@@ -2264,6 +2340,8 @@ public sealed class ReadmeExampleTests
 
         var errors = app.MapGroup("readme-errors");
         errors.Post("subscribe", (ISender sender, ReadmeSubscribeCommand command, CancellationToken ct) => sender.Send(command, ct));
+        errors.Get("students/{id}", static (Guid id) => new SingleResponse<Guid>(id));
+        errors.MapGet("raw/{id}", static (Guid id) => id);
         errors.MapGet("concurrency", () => { throw new ReadmeStandIns.DbUpdateConcurrencyException("0 rows were affected."); });
         errors.MapGet("circuit", () => { throw new ReadmeStandIns.BrokenCircuitException("The circuit is now open."); });
         errors.MapGet("argument", () => { throw new ArgumentException("readme-argument"); });

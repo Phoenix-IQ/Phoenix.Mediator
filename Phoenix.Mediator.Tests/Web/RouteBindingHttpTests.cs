@@ -853,13 +853,15 @@ public sealed class BindingRouteHttpTests
     }
 
     // The counterpart: ordinary members are still validated by System.Text.Json, so the exclusion has
-    // not turned the whole request type into a "skip anything you cannot parse" contract.
+    // not turned the whole request type into a "skip anything you cannot parse" contract. AddMediator
+    // makes ASP.NET Core throw for the bad body, so the 400 comes from the exception middleware.
     [Fact]
     public async Task Post_UnannotatedMemberWithAJsonValueOfTheWrongShape_StillReturnsBadRequest()
     {
         var builder = CreateBindingBuilder(new BindingRecorder());
         await using var app = builder.Build();
 
+        app.UsePhoenixExceptionHandling();
         app.MapGroup("binding-body-invalid").Post("{id}", (BindingRouteRecord command) => Results.Ok());
 
         using var client = await StartAsync(app);

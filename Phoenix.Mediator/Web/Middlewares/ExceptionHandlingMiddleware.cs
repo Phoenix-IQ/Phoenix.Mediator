@@ -108,7 +108,8 @@ public sealed class ExceptionHandlingMiddleware
     /// <summary>
     /// Bad requests reported by the framework: malformed JSON, a missing required parameter, an invalid
     /// antiforgery token, or a form/body over the limit. ASP.NET Core throws these when
-    /// <c>RouteHandlerOptions.ThrowOnBadRequest</c> is enabled, which is the default in Development.
+    /// <c>RouteHandlerOptions.ThrowOnBadRequest</c> is enabled, which <c>AddMediator</c> does in every environment
+    /// (ASP.NET Core's own default is Development only).
     /// The status code it chose (400, 413, 415, ...) is kept instead of reporting the caller's mistake as a 500.
     /// </summary>
     private async Task HandleBadHttpRequestException(HttpContext context, BadHttpRequestException exception)
